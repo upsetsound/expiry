@@ -7,12 +7,13 @@ import { useLiveAccount } from "@/lib/liveAccount";
 import {
   MAX_STRIKE_STEPS,
   RULES,
-  bsPrice,
   expectedMove,
+  liveMultiple,
   priceTicket,
   pricingVol,
   probITM,
   strikeStep,
+  winMultiple,
   yearsUntil,
   type Side,
 } from "@/lib/pricing";
@@ -28,6 +29,8 @@ const compact = (n: number) => n.toLocaleString(undefined, { style: "currency", 
 const num = (n: number, d = 0) => n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
 const pct = (n: number, d = 1) => `${(n * 100).toFixed(d)}%`;
 const signed = (n: number, f: (x: number) => string) => `${n >= 0 ? "+" : "−"}${f(Math.abs(n))}`;
+// Payout multiple: one decimal under 10x ("4.2×"), whole numbers above ("14×").
+const mult = (m: number) => `${m < 10 ? m.toFixed(1) : Math.round(m)}×`;
 
 type View = "trade" | "portfolio" | "house" | "leaderboard";
 type BottomTab = "positions" | "history" | "leaderboard" | "status";
@@ -154,6 +157,10 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   const MAX_OFF = MAX_STRIKE_STEPS;
   const [strikeOff, setStrikeOff] = useState(0);
   useEffect(() => setStrikeOff(0), [asset]);
+  const pickSide = (s: Side) => {
+    if (s !== side) setStrikeOff((o) => -o); // keep the same distance from the money on the other side
+    setSide(s);
+  };
   const atmStrike = spot ? Math.round(spot / step) * step : null;
   const strike = atmStrike !== null ? atmStrike + strikeOff * step : null;
 
@@ -164,6 +171,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
     const { perUnit, units, maxPayout: mp } = priceTicket(side, spot, strike, sigma, expiry, now, amt);
     const breakeven = side === "call" ? strike + perUnit : strike - perUnit;
     const chance = probITM(side, spot, strike, sigma, T);
+    const multiple = winMultiple(side, spot, strike, sigma, T);
     const here = account.positions.filter((p) => p.status === "open" && p.asset === asset && p.expiry === expiry);
     const spentHere = here.reduce((s, p) => s + p.premium, 0);
     // Pool limits count every open position against the pool (shared in live mode, your own in demo).
@@ -180,8 +188,18 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
     else if (balance !== null && amt > balance) block = "Not enough balance";
     else if (sideLiab + mp > RULES.sidePoolShare * poolBal || totalLiab + mp > RULES.totalPoolShare * poolBal) block = "Pool limit reached";
     const room = Math.max(0, Math.min(RULES.maxPremiumPerPosition, RULES.maxPremiumPerExpiry - spentHere, balance ?? RULES.maxPremiumPerPosition));
-    return { perUnit, units, breakeven, chance, mp, block, room };
+    return { perUnit, units, breakeven, chance, multiple, mp, block, room };
   }, [spot, strike, account, side, sigma, T, amt, asset, expiry, now]);
+
+  // Strike chips: at the money and four steps out on the chosen side (calls up, puts down), with their multiples.
+  const chips = useMemo(() => {
+    if (!spot || atmStrike === null) return [];
+    return [0, 1, 2, 3, 4].map((k) => {
+      const off = side === "call" ? k : -k;
+      const k$ = atmStrike + off * step;
+      return { off, strike: k$, multiple: winMultiple(side, spot, k$, sigma, T) };
+    });
+  }, [spot, atmStrike, step, side, sigma, T]);
 
   async function buy() {
     if (!account.signedIn) return account.signIn?.();
@@ -200,8 +218,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   const markValue = (p: Position) => {
     const s = market.price[p.asset];
     if (!s) return null;
-    const sg = sigmaFor(p.asset);
-    return Math.min(bsPrice(p.side, s, p.strike, sg, yearsUntil(p.expiry, now)) * p.units, RULES.payoutCap * p.premium);
+    return liveMultiple(p, s, sigmaFor(p.asset), now) * p.premium;
   };
   const inOptions = open.reduce((s, p) => s + p.premium, 0);
   const openValue = open.reduce((s, p) => s + (markValue(p) ?? 0), 0);
@@ -532,10 +549,10 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
             </div>
 
             <div className="toggle" role="group" aria-label="Direction">
-              <button className={side === "call" ? "on call" : ""} onClick={() => setSide("call")} aria-pressed={side === "call"}>
+              <button className={side === "call" ? "on call" : ""} onClick={() => pickSide("call")} aria-pressed={side === "call"}>
                 ↗ Call
               </button>
-              <button className={side === "put" ? "on put" : ""} onClick={() => setSide("put")} aria-pressed={side === "put"}>
+              <button className={side === "put" ? "on put" : ""} onClick={() => pickSide("put")} aria-pressed={side === "put"}>
                 ↘ Put
               </button>
             </div>
@@ -568,10 +585,30 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
                 <button aria-label="Lower strike" disabled={strikeOff <= -MAX_OFF} onClick={() => setStrikeOff(strikeOff - 1)}>
                   <Chevron dir="left" />
                 </button>
-                <span className="strike-val">{strike !== null ? num(strike, asset === "BTC" ? 0 : 1) : "—"}</span>
+                <span className="strike-val">
+                  <strong className="mult">{ticket ? mult(ticket.multiple) : "—"}</strong>
+                  <span className="sub">
+                    {strike !== null ? num(strike, asset === "BTC" ? 0 : 1) : "—"}
+                    {ticket ? ` · ${pct(ticket.chance, 0)} chance` : ""}
+                  </span>
+                </span>
                 <button aria-label="Higher strike" disabled={strikeOff >= MAX_OFF} onClick={() => setStrikeOff(strikeOff + 1)}>
                   <Chevron dir="right" />
                 </button>
+              </div>
+              <div className="ladder" role="group" aria-label="Strikes by payout multiple">
+                {chips.map((c) => (
+                  <button
+                    key={c.off}
+                    className={`${c.off === strikeOff ? "on" : ""} ${side}`}
+                    onClick={() => setStrikeOff(c.off)}
+                    aria-pressed={c.off === strikeOff}
+                    aria-label={`Strike ${num(c.strike, asset === "BTC" ? 0 : 1)}, win about ${mult(c.multiple)}`}
+                    title={num(c.strike, asset === "BTC" ? 0 : 1)}
+                  >
+                    {mult(c.multiple)}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -589,8 +626,8 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
 
             <dl className="kv summary">
               <div>
-                <dt>Win chance</dt>
-                <dd>{ticket ? pct(ticket.chance, 0) : "—"}</dd>
+                <dt>If it wins</dt>
+                <dd>{ticket ? `≈ ${usd(amt * ticket.multiple)}` : "—"}</dd>
               </div>
               <div>
                 <dt>Breakeven</dt>
@@ -603,7 +640,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
             </dl>
 
             <button className={`buy ${side}`} onClick={buy} disabled={!ticket || buying || (!!ticket.block && account.signedIn)}>
-              {!ticket ? "Waiting for price…" : buying ? "Buying…" : ticket.block ?? `Buy ${side === "call" ? "Call" : "Put"}`}
+              {!ticket ? "Waiting for price…" : buying ? "Buying…" : ticket.block ?? `Buy ${side === "call" ? "Call" : "Put"} · win ≈ ${mult(ticket.multiple)}`}
             </button>
 
             <div className="grow" />
