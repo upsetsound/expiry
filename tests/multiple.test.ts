@@ -1,6 +1,7 @@
 // Payout multiples shown on the ticket and the chart.
 import { describe, expect, it } from "vitest";
 import { RULES, bsPrice, liveMultiple, priceTicket, strikeStep, winMultiple } from "@/lib/pricing";
+import { shareText } from "@/lib/share";
 
 const SPOT = 76_000;
 const SIGMA = 0.5;
@@ -53,5 +54,20 @@ describe("liveMultiple", () => {
     expect(liveMultiple(pos, SPOT * 2, SIGMA, 0)).toBe(RULES.payoutCap);
     expect(liveMultiple(pos, SPOT + 20, SIGMA, pos.expiry)).toBeCloseTo(1, 10);
     expect(liveMultiple(pos, SPOT - 20, SIGMA, pos.expiry)).toBe(0);
+  });
+});
+
+describe("share text", () => {
+  const r = {
+    key: "k", asset: "BTC" as const, tenor: "1m" as const, expiry: 0, settle: 76_000, premium: 10, payout: 84, pnl: 74, multiple: 8.4,
+    positions: [{ id: "1", asset: "BTC" as const, side: "call" as const, strike: 75_900, tenor: "1m" as const, expiry: 0, premium: 10, units: 1, maxPayout: 200, boughtAt: 0, spotAtBuy: 75_900, status: "settled" as const }],
+  };
+  it("fills in the multiple, tenor, asset, side, handle and site", () => {
+    expect(shareText(r, "expiryapp", "https://expiry.example/")).toBe("Just hit 8.4× on a 1-minute BTC call on @expiryapp 📈 expiry.example");
+  });
+  it("leaves out an empty handle or site", () => {
+    expect(shareText(r, "", "https://expiry.example")).toBe("Just hit 8.4× on a 1-minute BTC call 📈 expiry.example");
+    expect(shareText(r, "@expiryapp", "")).toBe("Just hit 8.4× on a 1-minute BTC call on @expiryapp 📈");
+    expect(shareText(r, "", "")).toBe("Just hit 8.4× on a 1-minute BTC call 📈");
   });
 });

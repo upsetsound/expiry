@@ -1,9 +1,11 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Chart from "./Chart";
+import WinCard from "./WinCard";
 import { ASSETS, TICK, isDemo, useMarket, type Asset, type MarketState } from "@/lib/feeds";
 import { settledToast, useLocalAccount, type AccountApi, type Notify, type Position, type TapeItem, type Trader } from "@/lib/account";
 import { useRoundResults, type RoundResult } from "@/lib/useRoundResults";
+import { formatMultiple } from "@/lib/share";
 import { useLiveAccount } from "@/lib/liveAccount";
 import {
   MAX_STRIKE_STEPS,
@@ -30,8 +32,7 @@ const compact = (n: number) => n.toLocaleString(undefined, { style: "currency", 
 const num = (n: number, d = 0) => n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
 const pct = (n: number, d = 1) => `${(n * 100).toFixed(d)}%`;
 const signed = (n: number, f: (x: number) => string) => `${n >= 0 ? "+" : "−"}${f(Math.abs(n))}`;
-// Payout multiple: one decimal under 10x ("4.2×"), whole numbers above ("14×").
-const mult = (m: number) => `${m < 10 ? m.toFixed(1) : Math.round(m)}×`;
+const mult = formatMultiple;
 
 type View = "trade" | "portfolio" | "house" | "leaderboard";
 type BottomTab = "positions" | "history" | "leaderboard" | "status";
@@ -243,9 +244,12 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
 
   // Round results (open -> settled, grouped per round): settlement price flash on the chart, toasts.
   const [settled$, setSettled$] = useState<{ asset: Asset; tenor: Tenor; expiry: number; price: number; until: number } | null>(null);
+  const [win, setWin] = useState<RoundResult | null>(null);
   useRoundResults(account.positions, (r: RoundResult) => {
     setSettled$({ asset: r.asset, tenor: r.tenor, expiry: r.expiry, price: r.settle, until: Date.now() + 2_000 });
-    if (r.positions.length === 1) settledToast(r.positions[0], r.settle, r.payout, say);
+    // Profitable rounds get the win card; losses keep the small red toast.
+    if (r.pnl > 0) setWin(r);
+    else if (r.positions.length === 1) settledToast(r.positions[0], r.settle, r.payout, say);
     else say(`${r.asset} ${TENORS[r.tenor].label} round settled at ${num(r.settle, r.asset === "BTC" ? 0 : 2)} · ${signed(r.pnl, (x) => usd(x))}`, r.pnl >= 0 ? "pos" : "neg");
   });
 
@@ -544,6 +548,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
                 follow={follow}
                 onFollowChange={setFollow}
               />
+              {win && <WinCard result={win} onClose={() => setWin(null)} />}
             </div>
           </section>
 

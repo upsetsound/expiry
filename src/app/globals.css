@@ -205,3 +205,18 @@ h2 { font-size: 13px; margin: 28px 0 8px; font-weight: 600; color: var(--muted);
 .settles { display: flex; justify-content: space-between; align-items: baseline; color: var(--orange); font-size: 12.5px; font-weight: 500; }
 .settles strong { font-size: 14px; font-weight: 600; }
 .progress.urgent span { background: var(--orange); opacity: 1; }
+
+/* Win card */
+.wincard-wrap { position: absolute; inset: 0 78px 0 0; display: grid; place-items: center; z-index: 20; pointer-events: none; }
+.wincard { pointer-events: auto; cursor: pointer; display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 280px; padding: 22px 26px 18px; border-radius: 14px; background: var(--raised); border: 1px solid rgba(143, 245, 210, 0.35); box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55), 0 0 0 6px rgba(143, 245, 210, 0.05); text-align: center; animation: win-in 0.22s cubic-bezier(0.2, 0.9, 0.3, 1.2); }
+.win-pnl { font-size: 40px; font-weight: 700; letter-spacing: -0.03em; color: var(--mint); font-variant-numeric: tabular-nums; line-height: 1.1; }
+.win-mult { font-size: 22px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.win-meta { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; color: var(--muted); font-size: 12.5px; }
+.win-actions { display: flex; gap: 8px; margin-top: 14px; }
+.win-actions button { height: 34px; padding: 0 14px; border-radius: 8px; font-size: 13px; font-weight: 600; }
+.win-share { background: var(--text); color: var(--bg); }
+.win-again { border: 1px solid var(--line-strong); color: var(--text); }
+.win-share:hover, .win-again:hover { filter: brightness(1.08); }
+@keyframes win-in { from { opacity: 0; transform: scale(0.88); } to { opacity: 1; transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .wincard { animation: none; } }
+@media (max-width: 760px) { .wincard-wrap { inset: 0; } }
