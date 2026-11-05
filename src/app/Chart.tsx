@@ -74,9 +74,10 @@ export default function Chart(props: Props) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const live = useRef(props); // latest props for the draw loop
   live.current = props;
-  const view = useRef({ span: props.defaultSpan, right: 0, y0: 0, y1: 0, ready: false });
+  // y0/y1: drawn range (eased). t0/t1: target range. manualY: the price axis was zoomed by hand.
+  const view = useRef({ span: props.defaultSpan, right: 0, y0: 0, y1: 0, t0: 0, t1: 0, ready: false, manualY: false });
   const pointer = useRef<{ x: number; y: number } | null>(null);
-  const drag = useRef<{ x: number; right: number } | null>(null);
+  const drag = useRef<{ x: number; y: number; right: number; y0: number; y1: number; axis: boolean } | null>(null);
   const pinch = useRef<{ d: number; span: number } | null>(null);
   const touches = useRef(new Map<number, { x: number; y: number }>());
 
@@ -84,10 +85,14 @@ export default function Chart(props: Props) {
   useEffect(() => {
     view.current.span = props.defaultSpan;
     view.current.ready = false;
+    view.current.manualY = false;
   }, [props.asset, props.defaultSpan]);
 
   useEffect(() => {
-    if (props.follow) view.current.ready = false;
+    if (props.follow) {
+      view.current.ready = false;
+      view.current.manualY = false;
+    }
   }, [props.follow]);
 
   useEffect(() => {
@@ -113,13 +118,8 @@ export default function Chart(props: Props) {
     ro.observe(box);
     resize();
 
-    const liveRight = (now: number) => {
-      const { span } = view.current;
-      const { expiry } = live.current;
-      let right = now + span * 0.2;
-      if (expiry > now && expiry - now < span * 0.7) right = Math.max(right, expiry + span * 0.06);
-      return right;
-    };
+    // Live view scrolls at a constant pace: "now" sits 78% of the way across.
+    const liveRight = (now: number) => now + view.current.span * 0.22;
 
     const draw = () => {
       raf = requestAnimationFrame(draw);
@@ -134,67 +134,85 @@ export default function Chart(props: Props) {
       const x0 = x1 - v.span;
       const X = (t: number) => M.left + ((t - x0) / v.span) * plotW;
 
-      // Visible points: 1-minute history before the live stream, then live samples. One point per pixel at most.
+      // Visible points: 1-minute history before the live stream, then live samples.
+      // Each pixel column keeps its first, low, high and last price so zooming never drops spikes.
       const liveS = p.samples.current[p.asset];
       const histS = p.history.current[p.asset];
       const firstLive = liveS.length ? liveS[0].t : Infinity;
-      const pts: Sample[] = [];
+      type Bucket = { x: number; t: number; first: number; lo: number; hi: number; last: number };
+      const buckets: Bucket[] = [];
       const pushRange = (arr: Sample[], from: number, to: number) => {
-        let lastPx = -1;
         for (let i = Math.max(0, lowerBound(arr, from) - 1); i < arr.length && arr[i].t <= to; i++) {
-          const px = Math.round(X(arr[i].t));
-          if (px === lastPx && pts.length) pts[pts.length - 1] = arr[i];
-          else pts.push(arr[i]);
-          lastPx = px;
+          const s = arr[i];
+          const x = Math.floor(X(s.t));
+          const b = buckets[buckets.length - 1];
+          if (b && b.x === x) {
+            if (s.p < b.lo) b.lo = s.p;
+            if (s.p > b.hi) b.hi = s.p;
+            b.last = s.p;
+            b.t = s.t;
+          } else buckets.push({ x, t: s.t, first: s.p, lo: s.p, hi: s.p, last: s.p });
         }
       };
       pushRange(histS, x0, Math.min(x1, firstLive - 1));
       pushRange(liveS, x0, x1);
 
       ctx.clearRect(0, 0, w, h);
-      if (!pts.length) {
+      if (!buckets.length) {
         ctx.fillStyle = C.muted;
         ctx.font = "500 13px 'Inter Tight', system-ui";
         ctx.textAlign = "center";
         ctx.fillText(p.spot ? "No data in this range" : "Connecting to price feeds…", M.left + plotW / 2, M.top + plotH / 2);
         return;
       }
-      const last = pts[pts.length - 1];
+      const lastB = buckets[buckets.length - 1];
+      const last = { t: lastB.t, p: lastB.last };
       const spot = p.spot ?? last.p;
 
-      // Y range from what's on screen, plus a nearby strike. Eased so it doesn't jump.
-      let lo = Infinity;
-      let hi = -Infinity;
-      for (const s of pts) {
-        if (s.p < lo) lo = s.p;
-        if (s.p > hi) hi = s.p;
-      }
-      lo = Math.min(lo, spot);
-      hi = Math.max(hi, spot);
-      const minRange = spot * 0.0004;
-      if (hi - lo < minRange) {
-        const mid = (hi + lo) / 2;
-        lo = mid - minRange / 2;
-        hi = mid + minRange / 2;
-      }
-      const near = (k: number) => k > lo - (hi - lo) * 1.2 && k < hi + (hi - lo) * 1.2;
-      for (const k of [...(p.strike !== null ? [p.strike] : []), ...p.positions.map((x) => x.strike)]) {
-        if (near(k)) {
-          lo = Math.min(lo, k);
-          hi = Math.max(hi, k);
+      // Y range: re-fit only when prices leave the comfortable middle or the range gets too loose. Eased.
+      if (!v.manualY) {
+        let lo = Infinity;
+        let hi = -Infinity;
+        for (const b of buckets) {
+          if (b.x < M.left - 1) continue;
+          if (b.lo < lo) lo = b.lo;
+          if (b.hi > hi) hi = b.hi;
+        }
+        if (!Number.isFinite(lo)) {
+          lo = last.p;
+          hi = last.p;
+        }
+        lo = Math.min(lo, spot);
+        hi = Math.max(hi, spot);
+        const minRange = spot * 0.0004;
+        if (hi - lo < minRange) {
+          const mid = (hi + lo) / 2;
+          lo = mid - minRange / 2;
+          hi = mid + minRange / 2;
+        }
+        const near = (k: number) => k > lo - (hi - lo) * 1.2 && k < hi + (hi - lo) * 1.2;
+        for (const k of [...(p.strike !== null ? [p.strike] : []), ...p.positions.map((x) => x.strike)]) {
+          if (near(k)) {
+            lo = Math.min(lo, k);
+            hi = Math.max(hi, k);
+          }
+        }
+        const range = v.t1 - v.t0;
+        const edge = range * 0.06;
+        const refit = !v.ready || lo < v.t0 + edge || hi > v.t1 - edge || hi - lo < range * 0.4;
+        if (refit) {
+          const pad = (hi - lo) * 0.18;
+          v.t0 = lo - pad;
+          v.t1 = hi + pad;
+        }
+        if (!v.ready) {
+          v.y0 = v.t0;
+          v.y1 = v.t1;
+          v.ready = true;
         }
       }
-      const pad = (hi - lo) * 0.14;
-      const ty0 = lo - pad;
-      const ty1 = hi + pad;
-      if (!v.ready) {
-        v.y0 = ty0;
-        v.y1 = ty1;
-        v.ready = true;
-      } else {
-        v.y0 += (ty0 - v.y0) * 0.12;
-        v.y1 += (ty1 - v.y1) * 0.12;
-      }
+      v.y0 += (v.t0 - v.y0) * 0.18;
+      v.y1 += (v.t1 - v.y1) * 0.18;
       const Y = (pr: number) => M.top + (1 - (pr - v.y0) / (v.y1 - v.y0)) * plotH;
       const fmt = (n: number) => n.toLocaleString(undefined, { minimumFractionDigits: p.decimals, maximumFractionDigits: p.decimals });
       ctx.font = "500 11px 'Inter Tight', system-ui";
@@ -304,35 +322,37 @@ export default function Chart(props: Props) {
         ctx.setLineDash([]);
       }
 
-      // Area + step line.
-      ctx.beginPath();
-      ctx.moveTo(X(pts[0].t), Y(pts[0].p));
-      for (let i = 1; i < pts.length; i++) {
-        ctx.lineTo(X(pts[i].t), Y(pts[i - 1].p));
-        ctx.lineTo(X(pts[i].t), Y(pts[i].p));
+      // Step line through each pixel column's first, low, high and last price, plus a soft area fill.
+      const nowX = Math.min(X(now), M.left + plotW);
+      const line = new Path2D();
+      line.moveTo(buckets[0].x, Y(buckets[0].first));
+      let prev = buckets[0].first;
+      for (const b of buckets) {
+        line.lineTo(b.x, Y(prev));
+        line.lineTo(b.x, Y(b.first));
+        if (b.hi !== b.lo) {
+          line.lineTo(b.x, Y(b.hi));
+          line.lineTo(b.x, Y(b.lo));
+        }
+        line.lineTo(b.x, Y(b.last));
+        prev = b.last;
       }
-      const lastX = X(last.t);
-      ctx.lineTo(Math.min(X(now), M.left + plotW), Y(last.p));
-      const linePath = new Path2D();
-      linePath.moveTo(X(pts[0].t), Y(pts[0].p));
-      for (let i = 1; i < pts.length; i++) {
-        linePath.lineTo(X(pts[i].t), Y(pts[i - 1].p));
-        linePath.lineTo(X(pts[i].t), Y(pts[i].p));
-      }
-      linePath.lineTo(Math.max(lastX, Math.min(X(now), M.left + plotW)), Y(last.p));
-      ctx.lineTo(Math.max(lastX, Math.min(X(now), M.left + plotW)), M.top + plotH);
-      ctx.lineTo(X(pts[0].t), M.top + plotH);
-      ctx.closePath();
+      const lastX = Math.max(lastB.x, nowX);
+      line.lineTo(lastX, Y(last.p));
+      const area = new Path2D(line);
+      area.lineTo(lastX, M.top + plotH);
+      area.lineTo(buckets[0].x, M.top + plotH);
+      area.closePath();
       ctx.fillStyle = "rgba(234,244,241,0.035)";
-      ctx.fill();
+      ctx.fill(area);
       ctx.strokeStyle = C.line;
-      ctx.lineWidth = 1.6;
-      ctx.lineJoin = "round";
-      ctx.stroke(linePath);
+      ctx.lineWidth = 1.5;
+      ctx.lineJoin = "miter";
+      ctx.stroke(line);
       ctx.lineWidth = 1;
 
       // Live price: dotted guide, pulsing dot.
-      const dotX = Math.max(lastX, Math.min(X(now), M.left + plotW));
+      const dotX = lastX;
       const dotY = Y(last.p);
       ctx.setLineDash([1, 3]);
       ctx.strokeStyle = "rgba(143,245,210,0.5)";
@@ -441,6 +461,15 @@ export default function Chart(props: Props) {
       v.right = t + (v.right - t) * (span / v.span);
       v.span = span;
     };
+    const inAxis = (x: number) => x > w - M.right;
+    const scaleY = (factor: number) => {
+      const v = view.current;
+      v.manualY = true;
+      const mid = (v.t0 + v.t1) / 2;
+      const half = ((v.t1 - v.t0) / 2) * factor;
+      v.t0 = mid - half;
+      v.t1 = mid + half;
+    };
     const onDown = (e: PointerEvent) => {
       cv.setPointerCapture(e.pointerId);
       const pt = local(e);
@@ -450,12 +479,14 @@ export default function Chart(props: Props) {
         pinch.current = { d: Math.hypot(a.x - b.x, a.y - b.y), span: view.current.span };
         drag.current = null;
       } else {
-        drag.current = { x: pt.x, right: view.current.right };
+        const v = view.current;
+        drag.current = { x: pt.x, y: pt.y, right: v.right, y0: v.t0, y1: v.t1, axis: inAxis(pt.x) };
       }
     };
     const onMove = (e: PointerEvent) => {
       const pt = local(e);
       pointer.current = pt;
+      cv.style.cursor = drag.current?.axis || (!drag.current && inAxis(pt.x)) ? "ns-resize" : drag.current ? "grabbing" : "crosshair";
       if (touches.current.has(e.pointerId)) touches.current.set(e.pointerId, pt);
       if (pinch.current && touches.current.size === 2) {
         const [a, b] = [...touches.current.values()];
@@ -463,12 +494,31 @@ export default function Chart(props: Props) {
         if (d > 0) view.current.span = Math.min(MAX_SPAN, Math.max(MIN_SPAN, pinch.current.span * (pinch.current.d / d)));
         return;
       }
-      if (drag.current) {
-        const dx = pt.x - drag.current.x;
-        if (Math.abs(dx) > 2) {
-          unfollow();
-          view.current.right = Math.min(Date.now() + view.current.span * 0.9, drag.current.right - (dx / plotWidth()) * view.current.span);
-        }
+      const dr = drag.current;
+      if (!dr) return;
+      const v = view.current;
+      if (dr.axis) {
+        // Drag the price bar: down stretches the scale out, up zooms in.
+        const factor = Math.exp((pt.y - dr.y) * 0.006);
+        const mid = (dr.y0 + dr.y1) / 2;
+        const half = ((dr.y1 - dr.y0) / 2) * factor;
+        v.manualY = true;
+        v.t0 = mid - half;
+        v.t1 = mid + half;
+        return;
+      }
+      const dx = pt.x - dr.x;
+      const dy = pt.y - dr.y;
+      if (Math.abs(dx) > 2) {
+        unfollow();
+        v.right = Math.min(Date.now() + v.span * 0.9, dr.right - (dx / plotWidth()) * v.span);
+      }
+      if (v.manualY && Math.abs(dy) > 2) {
+        const perPx = (dr.y1 - dr.y0) / (h - M.top - M.bottom);
+        v.t0 = dr.y0 + dy * perPx;
+        v.t1 = dr.y1 + dy * perPx;
+        v.y0 = v.t0;
+        v.y1 = v.t1;
       }
     };
     const onUp = (e: PointerEvent) => {
@@ -482,6 +532,10 @@ export default function Chart(props: Props) {
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
       const pt = local(e);
+      if (inAxis(pt.x)) {
+        scaleY(Math.exp(e.deltaY * 0.002));
+        return;
+      }
       if (Math.abs(e.deltaX) > Math.abs(e.deltaY)) {
         unfollow();
         view.current.right += (e.deltaX / plotWidth()) * view.current.span;
@@ -489,7 +543,17 @@ export default function Chart(props: Props) {
       }
       zoomAt(pt.x, Math.exp(e.deltaY * 0.0015));
     };
-    const onDbl = () => live.current.onFollowChange(true);
+    const onDbl = (e: MouseEvent) => {
+      const r = cv.getBoundingClientRect();
+      if (inAxis(e.clientX - r.left)) {
+        view.current.manualY = false; // double-click the price bar: auto-fit again
+        view.current.ready = false;
+        return;
+      }
+      view.current.manualY = false;
+      view.current.ready = false;
+      live.current.onFollowChange(true);
+    };
     cv.addEventListener("pointerdown", onDown);
     cv.addEventListener("pointermove", onMove);
     cv.addEventListener("pointerup", onUp);
@@ -516,7 +580,7 @@ export default function Chart(props: Props) {
       <canvas
         ref={canvas}
         role="img"
-        aria-label={`${props.asset} price chart${props.spot ? `, last ${props.spot.toFixed(props.decimals)}` : ""}. Drag to pan, scroll to zoom, double-click to return to live.`}
+        aria-label={`${props.asset} price chart${props.spot ? `, last ${props.spot.toFixed(props.decimals)}` : ""}. Drag to pan, scroll to zoom, drag or scroll the price bar to zoom prices, double-click to return to live.`}
         style={{ touchAction: "none", cursor: "crosshair", display: "block" }}
       />
       <span className="watermark" aria-hidden="true">
