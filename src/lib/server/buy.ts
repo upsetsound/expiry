@@ -86,6 +86,10 @@ export function prepareBuy(input: BuyInput, market: { spot: number; sigma: numbe
   if (!(t.perUnit > 0) || !(t.units > 0)) return fail(409, "no_value", "This option has no value left", quote);
   // One-sided slippage: reject only if the buyer would pay more than shown + 2%. Cheaper fills at the server price.
   if (t.perUnit / input.perUnit - 1 > QUOTE_TOLERANCE) return fail(409, "price_moved", "Price moved, try again", quote);
+  // Checked after the price so a market jump reads as "Price moved". No in-the-money strikes (their win multiple is under 1.8x). The at-the-money strike is rounded to a step, so
+  // it can sit up to half a step in the money; allow 0.75 step to cover the buyer's and our spot differing.
+  const itm = side === "call" ? spot - strike : strike - spot;
+  if (itm > 0.75 * step) return fail(400, "itm_strike", "In-the-money strikes aren't offered", quote);
 
   return {
     ok: true,

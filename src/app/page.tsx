@@ -173,7 +173,9 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   // Strikes are steps away from the at-the-money strike, so they follow the price.
   // Step = a round number near half an expected move (at least one tick).
   const step = useMemo(() => strikeStep(em, TICK[asset]), [em, asset]);
-  const MAX_OFF = MAX_STRIKE_STEPS;
+  // Only at-the-money and out-of-the-money strikes: 0..+4 steps up for calls, 0..-4 down for puts.
+  const minOff = side === "call" ? 0 : -MAX_STRIKE_STEPS;
+  const maxOff = side === "call" ? MAX_STRIKE_STEPS : 0;
   const [strikeOff, setStrikeOff] = useState(0);
   useEffect(() => setStrikeOff(0), [asset]);
   const pickSide = (s: Side) => {
@@ -655,7 +657,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
                 <span className="muted small">{strikeOff === 0 ? "At the money" : spot && strike ? `${signed(strike / spot - 1, (x) => pct(x, 2))} from price` : ""}</span>
               </div>
               <div className="stepper">
-                <button aria-label="Lower strike" disabled={strikeOff <= -MAX_OFF} onClick={() => setStrikeOff(strikeOff - 1)}>
+                <button aria-label="Lower strike" disabled={strikeOff <= minOff} onClick={() => setStrikeOff((o) => Math.max(minOff, o - 1))}>
                   <Chevron dir="left" />
                 </button>
                 <span className="strike-val">
@@ -665,7 +667,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
                     {ticket ? ` · ${pct(ticket.chance, 0)} chance` : ""}
                   </span>
                 </span>
-                <button aria-label="Higher strike" disabled={strikeOff >= MAX_OFF} onClick={() => setStrikeOff(strikeOff + 1)}>
+                <button aria-label="Higher strike" disabled={strikeOff >= maxOff} onClick={() => setStrikeOff((o) => Math.min(maxOff, o + 1))}>
                   <Chevron dir="right" />
                 </button>
               </div>
