@@ -119,3 +119,23 @@ export function probITM(side: Side, spot: number, strike: number, sigma: number,
   const d2 = (Math.log(spot / strike) - 0.5 * sigma * sigma * T) / (sigma * Math.sqrt(T));
   return side === "call" ? normCdf(d2) : normCdf(-d2);
 }
+
+// Average multiple of the premium paid back when the option finishes in the money:
+// fair value / chance of finishing in the money, after the house edge, capped at the payout cap.
+// About 1.8x at the money; far strikes reach the 20x cap.
+export function winMultiple(side: Side, spot: number, strike: number, sigma: number, T: number): number {
+  const p = probITM(side, spot, strike, sigma, T);
+  if (!(p > 0)) return RULES.payoutCap;
+  return Math.min(RULES.payoutCap, 1 / ((1 + RULES.baseEdge) * p));
+}
+
+// What an open position is worth right now as a multiple of its premium (fair value, capped like the payout).
+export function liveMultiple(
+  pos: { side: Side; strike: number; units: number; premium: number; expiry: number },
+  spot: number,
+  sigma: number,
+  nowMs: number,
+): number {
+  const value = Math.min(bsPrice(pos.side, spot, pos.strike, sigma, yearsUntil(pos.expiry, nowMs)) * pos.units, RULES.payoutCap * pos.premium);
+  return pos.premium > 0 ? value / pos.premium : 0;
+}
