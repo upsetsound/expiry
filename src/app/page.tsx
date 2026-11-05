@@ -71,6 +71,26 @@ function Speaker({ muted }: { muted: boolean }) {
   );
 }
 
+// First-visit explainer at the top of the ticket (live mode), until dismissed. Dismissal is saved per browser.
+const INTRO_KEY = "expiry.intro.dismissed";
+function useIntro() {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    try {
+      setShow(localStorage.getItem(INTRO_KEY) !== "1");
+    } catch {
+      setShow(true);
+    }
+  }, []);
+  const dismiss = () => {
+    setShow(false);
+    try {
+      localStorage.setItem(INTRO_KEY, "1");
+    } catch {}
+  };
+  return { show, dismiss };
+}
+
 function Coin({ asset, small = false }: { asset: Asset; small?: boolean }) {
   return (
     <span className={`coin ${small ? "sm" : ""}`} aria-hidden="true">
@@ -266,6 +286,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   const [settled$, setSettled$] = useState<{ asset: Asset; tenor: Tenor; expiry: number; price: number; until: number } | null>(null);
   const [win, setWin] = useState<RoundResult | null>(null);
   const sound = useSound();
+  const intro = useIntro();
   useRoundResults(account.positions, (r: RoundResult) => {
     setSettled$({ asset: r.asset, tenor: r.tenor, expiry: r.expiry, price: r.settle, until: Date.now() + 2_000 });
     // Profitable rounds get the win card; losses keep the small red toast.
@@ -594,6 +615,22 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
           </section>
 
           <aside className="side" aria-label="Trade">
+            {live && intro.show && (
+              <div className="intro" role="note">
+                <p>
+                  <button className="intro-x" onClick={intro.dismiss} aria-label="Dismiss">
+                    ×
+                  </button>
+                  <strong>Call</strong> = {asset} goes up. <strong>Put</strong> = {asset} goes down. Pick your multiple, pay a premium, and the round
+                  settles in a minute. You can only lose what you pay.
+                </p>
+                {!account.signedIn && account.ready && (
+                  <button className="intro-signin" onClick={() => account.signIn?.()}>
+                    Sign in with X to trade
+                  </button>
+                )}
+              </div>
+            )}
             <div className="box">
               <button className="eq-head" onClick={() => setEquityOpen(!equityOpen)} aria-expanded={equityOpen}>
                 <Chevron dir={equityOpen ? "up" : "down"} /> Account equity
