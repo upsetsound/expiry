@@ -88,6 +88,30 @@ export function maxPayout(side: Side, spot: number, strike: number, units: numbe
   return Math.min(units * intrinsic(side, stress, strike), RULES.payoutCap * premium);
 }
 
+// Strikes offered: at-the-money plus up to this many steps either side.
+export const MAX_STRIKE_STEPS = 4;
+// A buy is rejected if the server's premium per unit is more than this far from the one the buyer was shown.
+export const QUOTE_TOLERANCE = 0.02;
+
+// Strike step: a round number near half an expected move, at least one tick.
+export function strikeStep(em: number, tick: number): number {
+  if (!em) return tick;
+  const raw = em * 0.5;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const n = raw / mag;
+  const nice = (n < 1.5 ? 1 : n < 3.5 ? 2.5 : n < 7 ? 5 : 10) * mag;
+  return Math.max(tick, Math.round(nice / tick) * tick);
+}
+
+// Everything a ticket needs from the market inputs. The client's ticket and the server's /api/buy both use this.
+export function priceTicket(side: Side, spot: number, strike: number, sigma: number, expiryMs: number, nowMs: number, premium: number) {
+  const T = yearsUntil(expiryMs, nowMs);
+  const em = expectedMove(spot, sigma, T);
+  const perUnit = quote(side, spot, strike, sigma, T);
+  const units = perUnit > 0 ? premium / perUnit : 0;
+  return { T, em, perUnit, units, maxPayout: maxPayout(side, spot, strike, units, premium, em) };
+}
+
 // Chance the option finishes in the money under the pricing vol (no edge).
 export function probITM(side: Side, spot: number, strike: number, sigma: number, T: number): number {
   if (T <= 0 || sigma <= 0) return intrinsic(side, spot, strike) > 0 ? 1 : 0;

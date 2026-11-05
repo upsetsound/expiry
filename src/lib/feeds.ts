@@ -2,14 +2,11 @@
 // Live prices from four venues, combined into one median price per asset, sampled 4 times a second.
 import { useEffect, useRef, useState, type MutableRefObject } from "react";
 import { realizedVol } from "./pricing";
+import { ASSETS, combine, fetchCoinbaseHistory, fetchDvol, fetchSeconds, settlementPrice, type Asset, type Quote, type Venue } from "./prices";
 
-export type Asset = "BTC" | "ETH";
-export const ASSETS: Asset[] = ["BTC", "ETH"];
-export const TICK: Record<Asset, number> = { BTC: 10, ETH: 0.5 };
+export { ASSETS, TICK, combine, fetchSeconds, type Asset } from "./prices";
 export const SAMPLE_MS = 250;
 
-type Venue = "coinbase" | "binance" | "okx" | "hyperliquid";
-type Quote = { price: number; at: number };
 type VenueBook = Record<Asset, Partial<Record<Venue, Quote>>>;
 
 export type Sample = { t: number; p: number };
@@ -28,25 +25,7 @@ export type MarketState = {
 
 export const isDemo = () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
 
-const STALE_MS = 10_000;
-const OUTLIER = 0.005;
 const KEEP_MS = 2 * 60 * 60_000;
-
-function median(xs: number[]): number {
-  const s = [...xs].sort((a, b) => a - b);
-  const m = Math.floor(s.length / 2);
-  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
-}
-
-// Median across fresh venues, dropping any venue more than 0.5% from the median of the others.
-export function combine(book: Partial<Record<Venue, Quote>>, now: number): { price: number | null; n: number } {
-  const fresh = Object.values(book).filter((q): q is Quote => !!q && now - q.at < STALE_MS).map((q) => q.price);
-  if (fresh.length === 0) return { price: null, n: 0 };
-  if (fresh.length < 3) return { price: median(fresh), n: fresh.length };
-  const kept = fresh.filter((p, i) => Math.abs(p / median(fresh.filter((_, j) => j !== i)) - 1) <= OUTLIER);
-  const use = kept.length ? kept : fresh;
-  return { price: median(use), n: use.length };
-}
 
 function openSocket(url: string, onOpen: (ws: WebSocket) => void, onMsg: (data: unknown) => void, pingText?: string) {
   let ws: WebSocket | null = null;
@@ -81,49 +60,6 @@ function openSocket(url: string, onOpen: (ws: WebSocket) => void, onMsg: (data: 
     if (ping) clearInterval(ping);
     ws?.close();
   };
-}
-
-async function fetchCoinbaseHistory(asset: Asset): Promise<Sample[]> {
-  const r = await fetch(`https://api.exchange.coinbase.com/products/${asset}-USD/candles?granularity=60`);
-  const rows: number[][] = await r.json();
-  return rows.map((row) => ({ t: row[0] * 1000 + 60_000, p: row[4] })).sort((a, b) => a.t - b.t);
-}
-
-async function fetchDvol(asset: Asset): Promise<number | null> {
-  const end = Date.now();
-  const start = end - 2 * 60 * 60_000;
-  const r = await fetch(
-    `https://www.deribit.com/api/v2/public/get_volatility_index_data?currency=${asset}&start_timestamp=${start}&end_timestamp=${end}&resolution=60`,
-  );
-  const j = await r.json();
-  const data: number[][] = j?.result?.data ?? [];
-  return data.length ? data[data.length - 1][4] / 100 : null;
-}
-
-// Second-by-second history from Binance's public market-data API (1,000 seconds per request), oldest first.
-// Each point is the 1-second close, stamped at the end of that second. Empty on failure.
-export async function fetchSeconds(asset: Asset, from: number, to: number): Promise<Sample[]> {
-  const out: Sample[] = [];
-  let start = Math.floor(from / 1000) * 1000;
-  try {
-    while (start < to && out.length < 7300) {
-      const r = await fetch(
-        `https://data-api.binance.vision/api/v3/klines?symbol=${asset}USDT&interval=1s&startTime=${start}&endTime=${to}&limit=1000`,
-      );
-      if (!r.ok) break;
-      const rows: (string | number)[][] = await r.json();
-      if (!Array.isArray(rows) || !rows.length) break;
-      for (const row of rows) {
-        const t = Number(row[0]) + 1000;
-        const p = parseFloat(String(row[4]));
-        if (t <= to && Number.isFinite(p)) out.push({ t, p });
-      }
-      const next = Number(rows[rows.length - 1][0]) + 1000;
-      if (next <= start) break;
-      start = next;
-    }
-  } catch {}
-  return out;
 }
 
 // Replace everything in [from, to) with fresh points, keeping the series sorted.
@@ -169,24 +105,10 @@ function loadTicks(): Series | null {
   }
 }
 
-// Fallback settlement when the tab was closed during the window: Coinbase 1-minute candles.
-// Windows of a minute or more average the closes inside; shorter windows use the close of the minute ending at expiry.
+// Fallback settlement when the tab was closed during the window (demo and local paper mode):
+// Binance 1-second closes, else Coinbase 1-minute candles. Same rule the server settles with.
 export async function fetchSettlementFallback(asset: Asset, from: number, to: number): Promise<number | null> {
-  const secs = await fetchSeconds(asset, from, to);
-  const inWindow = secs.filter((x) => x.t > from && x.t <= to);
-  if (inWindow.length >= Math.max(1, ((to - from) / 1000) * 0.6)) return inWindow.reduce((a, x) => a + x.p, 0) / inWindow.length;
-  try {
-    const start = Math.min(from, to - 60_000);
-    const r = await fetch(
-      `https://api.exchange.coinbase.com/products/${asset}-USD/candles?granularity=60&start=${new Date(start).toISOString()}&end=${new Date(to).toISOString()}`,
-    );
-    const rows: number[][] = await r.json();
-    const closes = rows.filter((row) => row[0] * 1000 >= start && row[0] * 1000 < to).map((row) => row[4]);
-    if (!closes.length) return null;
-    return to - from >= 60_000 ? closes.reduce((a, b) => a + b, 0) / closes.length : closes[0];
-  } catch {
-    return null;
-  }
+  return (await settlementPrice(asset, to, to - from))?.price ?? null;
 }
 
 // Settlement: average of the sampled medians in [from, to). coverage = share of the window with samples.
