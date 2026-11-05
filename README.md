@@ -13,6 +13,7 @@ Deploy: push to GitHub and import the repo on Vercel (no environment variables n
 
 ## What's in v0
 
+- In-house chart: live price line with 1-minute history, expected-move cone to expiry, settlement window, strike, breakeven and open positions; 15m / 1h / 4h ranges.
 - Live price = median across Coinbase, Binance, OKX and Hyperliquid websockets (outliers >0.5% dropped).
 - Pricing = Black-Scholes × 1.10 house edge, vol = max(Deribit DVOL, 1.25 × 60-min realized, 35%).
 - Strike ladder = spot ± {0, 0.5, 1, 1.5, 2} expected moves, fixed per expiry when first shown.

@@ -14,6 +14,7 @@ import {
   type Side,
 } from "@/lib/pricing";
 import { SALES_STOP_MS, formatCountdown, formatExpiry, nextExpiry, type Tenor } from "@/lib/schedule";
+import Chart from "./Chart";
 import { TOP_UP_BELOW, WEEK_MS, START_BALANCE, freshAccount, loadAccount, saveAccount, type Account, type Position } from "@/lib/store";
 
 const CONTRACT: Record<Asset, number> = { BTC: 0.01, ETH: 0.1 };
@@ -171,6 +172,12 @@ export default function Home() {
     setTimeout(() => setFlash(null), 3000);
   }
 
+  const series = useMemo(() => {
+    const live = market.samples[asset];
+    const first = live.length ? live[0].t : Infinity;
+    return [...market.history[asset].filter((h) => h.t < first), ...live];
+  }, [market.samples, market.history, asset]);
+
   const canTopUp = acct && acct.balance < TOP_UP_BELOW && now - acct.lastTopUp > WEEK_MS;
   const open = acct?.positions.filter((p) => p.status === "open") ?? [];
   const settled = acct?.positions.filter((p) => p.status === "settled") ?? [];
@@ -249,6 +256,21 @@ export default function Home() {
             Vol = max(Deribit DVOL {market.implied[asset] ? pct(market.implied[asset]!, 0) : "n/a"}, 1.25 × realized{" "}
             {pct(market.realized[asset], 0)}, 35% floor). Prices include a 10% house edge.
           </p>
+
+          <Chart
+            series={series}
+            now={now}
+            spot={spot}
+            sigma={sigma}
+            expiry={expiry}
+            side={side}
+            strike={strike}
+            breakeven={ticket ? ticket.breakeven : null}
+            positions={open
+              .filter((p) => p.asset === asset && p.expiry === expiry)
+              .map((p) => ({ id: p.id, side: p.side, strike: p.strike, premium: p.premium }))}
+            decimals={asset === "BTC" ? 0 : 2}
+          />
 
           <div className="seg wide" role="group" aria-label="Option type">
             <button className={side === "call" ? "on call" : ""} onClick={() => setSide("call")}>

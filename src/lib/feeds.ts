@@ -19,6 +19,7 @@ export type MarketState = {
   realized: Record<Asset, number>; // annualized, last 60 one-minute closes
   implied: Record<Asset, number | null>; // Deribit DVOL as a decimal
   samples: Record<Asset, Sample[]>; // 1-second medians, last ~2 hours
+  history: Record<Asset, Sample[]>; // 1-minute closes before the page opened
   connected: boolean;
 };
 
@@ -79,10 +80,13 @@ function openSocket(url: string, onOpen: (ws: WebSocket) => void, onMsg: (data: 
   };
 }
 
-async function fetchCoinbaseCloses(asset: Asset): Promise<number[]> {
+// Last ~300 one-minute candles from Coinbase, oldest first, stamped at each candle's close.
+async function fetchCoinbaseHistory(asset: Asset): Promise<Sample[]> {
   const r = await fetch(`https://api.exchange.coinbase.com/products/${asset}-USD/candles?granularity=60`);
   const rows: number[][] = await r.json();
-  return rows.slice(0, 61).reverse().map((row) => row[4]);
+  return rows
+    .map((row) => ({ t: row[0] * 1000 + 60_000, p: row[4] }))
+    .sort((a, b) => a.t - b.t);
 }
 
 async function fetchDvol(asset: Asset): Promise<number | null> {
@@ -116,6 +120,7 @@ export function useMarket(): MarketState {
   const book = useRef<VenueBook>({ BTC: {}, ETH: {} });
   const samples = useRef<Record<Asset, Sample[]>>({ BTC: [], ETH: [] });
   const closes = useRef<Record<Asset, number[]>>({ BTC: [], ETH: [] });
+  const history = useRef<Record<Asset, Sample[]>>({ BTC: [], ETH: [] });
   const lastMinute = useRef<number>(0);
   const [state, setState] = useState<MarketState>({
     price: { BTC: null, ETH: null },
@@ -123,6 +128,7 @@ export function useMarket(): MarketState {
     realized: { BTC: 0, ETH: 0 },
     implied: { BTC: null, ETH: null },
     samples: { BTC: [], ETH: [] },
+    history: { BTC: [], ETH: [] },
     connected: false,
   });
   const implied = useRef<Record<Asset, number | null>>({ BTC: null, ETH: null });
@@ -186,8 +192,11 @@ export function useMarket(): MarketState {
 
     // Seed realized vol history and implied vol.
     for (const a of ["BTC", "ETH"] as Asset[]) {
-      fetchCoinbaseCloses(a)
-        .then((c) => (closes.current[a] = c))
+      fetchCoinbaseHistory(a)
+        .then((h) => {
+          history.current[a] = h;
+          closes.current[a] = h.slice(-61).map((x) => x.p);
+        })
         .catch(() => {});
     }
     const loadIv = () => {
@@ -227,6 +236,7 @@ export function useMarket(): MarketState {
         realized: { BTC: realizedVol(closes.current.BTC), ETH: realizedVol(closes.current.ETH) },
         implied: { ...implied.current },
         samples: { BTC: samples.current.BTC, ETH: samples.current.ETH },
+        history: { BTC: history.current.BTC, ETH: history.current.ETH },
         connected: venues.BTC > 0 || venues.ETH > 0,
       });
     }, 1000);
