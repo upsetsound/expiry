@@ -20,6 +20,7 @@ export type MarketState = {
   implied: Record<Asset, number | null>; // Deribit DVOL as a decimal
   samples: Record<Asset, Sample[]>; // 1-second medians, last ~2 hours
   history: Record<Asset, Sample[]>; // 1-minute closes before the page opened
+  open24: Record<Asset, number | null>; // price 24 hours ago (Coinbase stats)
   connected: boolean;
 };
 
@@ -121,6 +122,7 @@ export function useMarket(): MarketState {
   const samples = useRef<Record<Asset, Sample[]>>({ BTC: [], ETH: [] });
   const closes = useRef<Record<Asset, number[]>>({ BTC: [], ETH: [] });
   const history = useRef<Record<Asset, Sample[]>>({ BTC: [], ETH: [] });
+  const implied = useRef<Record<Asset, number | null>>({ BTC: null, ETH: null });
   const lastMinute = useRef<number>(0);
   const [state, setState] = useState<MarketState>({
     price: { BTC: null, ETH: null },
@@ -129,11 +131,54 @@ export function useMarket(): MarketState {
     implied: { BTC: null, ETH: null },
     samples: { BTC: [], ETH: [] },
     history: { BTC: [], ETH: [] },
+    open24: { BTC: null, ETH: null },
     connected: false,
   });
-  const implied = useRef<Record<Asset, number | null>>({ BTC: null, ETH: null });
+  const open24 = useRef<Record<Asset, number | null>>({ BTC: null, ETH: null });
 
   useEffect(() => {
+    // ?demo: simulated prices for offline demos and screenshots.
+    if (typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo")) {
+      const base: Record<Asset, number> = { BTC: 101_250, ETH: 3_420 };
+      const walk = { ...base };
+      const t0 = Date.now();
+      for (const a of ["BTC", "ETH"] as Asset[]) {
+        let p = base[a] * 0.996;
+        const h: Sample[] = [];
+        for (let i = 300; i > 0; i--) {
+          p *= Math.exp((Math.random() - 0.48) * 0.0016);
+          h.push({ t: Math.floor(t0 / 60_000) * 60_000 - i * 60_000, p });
+        }
+        history.current[a] = h;
+        closes.current[a] = h.slice(-61).map((x) => x.p);
+        walk[a] = p;
+        open24.current[a] = base[a] * 1.012;
+      }
+      implied.current = { BTC: 0.46, ETH: 0.58 };
+      const tick = setInterval(() => {
+        const now = Date.now();
+        const price = { BTC: 0, ETH: 0 } as Record<Asset, number | null>;
+        for (const a of ["BTC", "ETH"] as Asset[]) {
+          walk[a] *= Math.exp((Math.random() - 0.5) * 0.0005);
+          price[a] = walk[a];
+          const s = samples.current[a];
+          s.push({ t: now, p: walk[a] });
+          while (s.length && now - s[0].t > 2 * 60 * 60_000) s.shift();
+        }
+        setState({
+          price,
+          venues: { BTC: 4, ETH: 4 },
+          realized: { BTC: realizedVol(closes.current.BTC), ETH: realizedVol(closes.current.ETH) },
+          implied: { ...implied.current },
+          samples: { BTC: samples.current.BTC, ETH: samples.current.ETH },
+          history: { BTC: history.current.BTC, ETH: history.current.ETH },
+          open24: { ...open24.current },
+          connected: true,
+        });
+      }, 1000);
+      return () => clearInterval(tick);
+    }
+
     const set = (a: Asset, v: Venue, price: number) => {
       if (Number.isFinite(price) && price > 0) book.current[a][v] = { price, at: Date.now() };
     };
@@ -206,8 +251,23 @@ export function useMarket(): MarketState {
           .catch(() => {});
       }
     };
+    const loadStats = () => {
+      for (const a of ["BTC", "ETH"] as Asset[]) {
+        fetch(`https://api.exchange.coinbase.com/products/${a}-USD/stats`)
+          .then((r) => r.json())
+          .then((j) => {
+            const o = parseFloat(j?.open);
+            if (Number.isFinite(o) && o > 0) open24.current[a] = o;
+          })
+          .catch(() => {});
+      }
+    };
     loadIv();
-    const ivTimer = setInterval(loadIv, 60_000);
+    loadStats();
+    const ivTimer = setInterval(() => {
+      loadIv();
+      loadStats();
+    }, 60_000);
 
     // Once a second: combine venues, record a sample, roll 1-minute closes, publish state.
     const tick = setInterval(() => {
@@ -237,6 +297,7 @@ export function useMarket(): MarketState {
         implied: { ...implied.current },
         samples: { BTC: samples.current.BTC, ETH: samples.current.ETH },
         history: { BTC: history.current.BTC, ETH: history.current.ETH },
+        open24: { ...open24.current },
         connected: venues.BTC > 0 || venues.ETH > 0,
       });
     }, 1000);

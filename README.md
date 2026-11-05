@@ -13,6 +13,9 @@ Deploy: push to GitHub and import the repo on Vercel (no environment variables n
 
 ## What's in v0
 
+- Papertrade-style layout: top nav (Trade, Portfolio, House, Leaderboard, More), asset pill with BTC/ETH dropdown and 24h change, stats bar (24h volume, call/put OI, expiry and chart-range dropdowns, live indicator), center chart, Call/Put ticket on the right, bottom tabs (Positions, History, Leaderboard, Status) with a trade ticker tape.
+- `?demo` in the URL runs on simulated prices (offline demos, screenshots, recording the demo video).
+
 - In-house chart: live price line with 1-minute history, expected-move cone to expiry, settlement window, strike, breakeven and open positions; 15m / 1h / 4h ranges.
 - Live price = median across Coinbase, Binance, OKX and Hyperliquid websockets (outliers >0.5% dropped).
 - Pricing = Black-Scholes × 1.10 house edge, vol = max(Deribit DVOL, 1.25 × 60-min realized, 35%).

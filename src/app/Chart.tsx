@@ -25,9 +25,8 @@ type Props = {
   breakeven: number | null;
   positions: ChartPosition[];
   decimals: number;
+  lookback: number; // index into LOOKBACKS
 };
-
-const H = 340;
 const M = { top: 18, right: 84, bottom: 28, left: 8 };
 
 function niceStep(range: number, target: number): number {
@@ -39,16 +38,20 @@ function niceStep(range: number, target: number): number {
 
 const timeLabel = (t: number) => new Date(t).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 
-export default function Chart({ series, now, spot, sigma, expiry, side, strike, breakeven, positions, decimals }: Props) {
+export default function Chart({ series, now, spot, sigma, expiry, side, strike, breakeven, positions, decimals, lookback }: Props) {
   const box = useRef<HTMLDivElement>(null);
   const [w, setW] = useState(640);
-  const [lb, setLb] = useState(1);
+  const [H, setH] = useState(420);
+  const lb = lookback;
   const [hoverX, setHoverX] = useState<number | null>(null);
 
   useEffect(() => {
     const el = box.current;
     if (!el) return;
-    const ro = new ResizeObserver(([e]) => setW(Math.max(280, Math.floor(e.contentRect.width))));
+    const ro = new ResizeObserver(([e]) => {
+      setW(Math.max(280, Math.floor(e.contentRect.width)));
+      setH(Math.max(260, Math.floor(e.contentRect.height)));
+    });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -157,19 +160,6 @@ export default function Chart({ series, now, spot, sigma, expiry, side, strike, 
 
   return (
     <div className="chart" ref={box}>
-      <div className="chart-bar">
-        <div className="seg small" role="group" aria-label="Chart range">
-          {LOOKBACKS.map((l, i) => (
-            <button key={l.label} className={i === lb ? "on" : ""} onClick={() => setLb(i)}>
-              {l.label}
-            </button>
-          ))}
-        </div>
-        <span className="legend">
-          <i className="sw cone" aria-hidden="true" /> ±1σ to expiry
-          <i className="sw settle" aria-hidden="true" /> settlement window
-        </span>
-      </div>
       <svg
         width={w}
         height={H}
@@ -201,6 +191,18 @@ export default function Chart({ series, now, spot, sigma, expiry, side, strike, 
           </text>
         ))}
 
+        <text
+          x={M.left + plotW / 2}
+          y={M.top + plotH / 2 + 40}
+          textAnchor="middle"
+          fontSize={Math.min(150, plotW / 4)}
+          fontWeight={600}
+          letterSpacing="-0.05em"
+          fill="var(--text)"
+          fillOpacity={0.03}
+        >
+          expiry
+        </text>
         <g clipPath="url(#plot)">
           {expiryVisible && (
             <rect
@@ -267,6 +269,11 @@ export default function Chart({ series, now, spot, sigma, expiry, side, strike, 
         {!expiryVisible && (
           <text x={M.left + plotW - 6} y={M.top + 12} fontSize={11} fill="var(--muted)" textAnchor="end">
             Expiry {timeLabel(expiry)} →
+          </text>
+        )}
+        {spot && (
+          <text x={M.left + 8} y={M.top + 12} fontSize={11} fill="var(--muted)">
+            ±1σ range to expiry · shaded band = settlement window
           </text>
         )}
 
