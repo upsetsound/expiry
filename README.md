@@ -18,6 +18,7 @@ Deploy: push to GitHub and import the repo on Vercel (no environment variables n
 - Ticket: Call/Put, expiry, strike stepper (steps of about half an expected move from the current price), premium with ½× / 2× / Max, win chance, breakeven, max payout.
 - Pricing: Black-Scholes × 1.10, vol = max(Deribit DVOL, 1.25 × 60-min realized, 35%). Caps: $250 per trade, $1,000 per expiry, 20× payout cap, pool liability limits.
 - Live price = median of Coinbase, Binance, OKX and Hyperliquid websockets. `?demo` runs on simulated prices with its own separate paper account.
+- Tracking while away: the last 2 hours of prices are saved in the browser; on reload or when you return to the tab, the gap is filled with 1-second prices from Binance's public market-data API. Positions that expired while you were away settle from the same 1-second data (Coinbase 1-minute candles as backup).
 - State lives in the browser's localStorage.
 
 ## Not yet

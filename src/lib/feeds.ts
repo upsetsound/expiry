@@ -100,9 +100,81 @@ async function fetchDvol(asset: Asset): Promise<number | null> {
   return data.length ? data[data.length - 1][4] / 100 : null;
 }
 
+// Second-by-second history from Binance's public market-data API (1,000 seconds per request), oldest first.
+// Each point is the 1-second close, stamped at the end of that second. Empty on failure.
+export async function fetchSeconds(asset: Asset, from: number, to: number): Promise<Sample[]> {
+  const out: Sample[] = [];
+  let start = Math.floor(from / 1000) * 1000;
+  try {
+    while (start < to && out.length < 7300) {
+      const r = await fetch(
+        `https://data-api.binance.vision/api/v3/klines?symbol=${asset}USDT&interval=1s&startTime=${start}&endTime=${to}&limit=1000`,
+      );
+      if (!r.ok) break;
+      const rows: (string | number)[][] = await r.json();
+      if (!Array.isArray(rows) || !rows.length) break;
+      for (const row of rows) {
+        const t = Number(row[0]) + 1000;
+        const p = parseFloat(String(row[4]));
+        if (t <= to && Number.isFinite(p)) out.push({ t, p });
+      }
+      const next = Number(rows[rows.length - 1][0]) + 1000;
+      if (next <= start) break;
+      start = next;
+    }
+  } catch {}
+  return out;
+}
+
+// Replace everything in [from, to) with fresh points, keeping the series sorted.
+function mergeInto(arr: Sample[], from: number, to: number, pts: Sample[]) {
+  if (!pts.length) return;
+  const a = arr.findIndex((x) => x.t >= from);
+  const i = a === -1 ? arr.length : a;
+  let j = i;
+  while (j < arr.length && arr[j].t < to) j++;
+  arr.splice(i, j - i, ...pts.filter((x) => x.t >= from && x.t < to));
+}
+
+// The last 2 hours of prices are saved in this browser (one point per second) so a reload doesn't start blank.
+const STORE_KEY = "expiry.ticks.v1";
+function saveTicks(series: Series) {
+  try {
+    const slim: Record<string, [number, number][]> = {};
+    for (const a of ASSETS) {
+      const pts: [number, number][] = [];
+      let lastSec = -1;
+      for (const x of series[a]) {
+        const sec = Math.floor(x.t / 1000);
+        if (sec === lastSec) pts[pts.length - 1] = [x.t, x.p];
+        else pts.push([x.t, x.p]);
+        lastSec = sec;
+      }
+      slim[a] = pts;
+    }
+    localStorage.setItem(STORE_KEY, JSON.stringify({ at: Date.now(), slim }));
+  } catch {}
+}
+function loadTicks(): Series | null {
+  try {
+    const raw = localStorage.getItem(STORE_KEY);
+    if (!raw) return null;
+    const { slim } = JSON.parse(raw) as { slim: Record<Asset, [number, number][]> };
+    const cutoff = Date.now() - KEEP_MS;
+    const out = { BTC: [], ETH: [] } as Series;
+    for (const a of ASSETS) out[a] = (slim[a] ?? []).filter(([t]) => t > cutoff).map(([t, p]) => ({ t, p }));
+    return out;
+  } catch {
+    return null;
+  }
+}
+
 // Fallback settlement when the tab was closed during the window: Coinbase 1-minute candles.
 // Windows of a minute or more average the closes inside; shorter windows use the close of the minute ending at expiry.
 export async function fetchSettlementFallback(asset: Asset, from: number, to: number): Promise<number | null> {
+  const secs = await fetchSeconds(asset, from, to);
+  const inWindow = secs.filter((x) => x.t > from && x.t <= to);
+  if (inWindow.length >= Math.max(1, ((to - from) / 1000) * 0.6)) return inWindow.reduce((a, x) => a + x.p, 0) / inWindow.length;
   try {
     const start = Math.min(from, to - 60_000);
     const r = await fetch(
@@ -245,6 +317,40 @@ export function useMarket(): MarketState {
           })
           .catch(() => {});
       }
+
+      // Fill the time this tab wasn't recording: second-level prices from Binance.
+      // On load: from the last saved tick (or 30 minutes back) to now. On return to the tab: from when it was hidden.
+      const saved = loadTicks();
+      if (saved) for (const a of ASSETS) samples.current[a] = saved[a];
+      const backfill = async (from: number) => {
+        const to = Date.now();
+        const start = Math.max(from, to - KEEP_MS);
+        if (to - start < 3000) return;
+        for (const a of ASSETS) {
+          const pts = await fetchSeconds(a, start, to);
+          if (pts.length) mergeInto(samples.current[a], start, pts[pts.length - 1].t + 1, pts);
+        }
+      };
+      const lastSaved = Math.max(saved?.BTC.at(-1)?.t ?? 0, saved?.ETH.at(-1)?.t ?? 0);
+      backfill(lastSaved || Date.now() - 30 * 60_000);
+      let hiddenAt = 0;
+      const onVis = () => {
+        if (document.hidden) hiddenAt = Date.now();
+        else if (hiddenAt) {
+          backfill(hiddenAt - 2000);
+          hiddenAt = 0;
+        }
+      };
+      document.addEventListener("visibilitychange", onVis);
+      const persist = setInterval(() => saveTicks(samples.current), 15_000);
+      const onUnload = () => saveTicks(samples.current);
+      window.addEventListener("pagehide", onUnload);
+      cleanups.push(() => {
+        document.removeEventListener("visibilitychange", onVis);
+        window.removeEventListener("pagehide", onUnload);
+        clearInterval(persist);
+        saveTicks(samples.current);
+      });
       const slow = () => {
         for (const a of ASSETS) {
           fetchDvol(a)
