@@ -1,36 +1,29 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Expiry — paper mode v0
 
-## Getting Started
+BTC and ETH calls and puts that expire every hour (or daily at 08:00 UTC), priced live, paper money only.
 
-First, run the development server:
+## Run it
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm install
+npm run dev      # http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Deploy: push to GitHub and import the repo on Vercel (no environment variables needed).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## What's in v0
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- Live price = median across Coinbase, Binance, OKX and Hyperliquid websockets (outliers >0.5% dropped).
+- Pricing = Black-Scholes × 1.10 house edge, vol = max(Deribit DVOL, 1.25 × 60-min realized, 35%).
+- Strike ladder = spot ± {0, 0.5, 1, 1.5, 2} expected moves, fixed per expiry when first shown.
+- Caps: $250/position, $1,000/expiry, 20× payout cap, pool liability limits (30% per side, 60% total).
+- Settlement = 5-minute average of the median price before expiry; falls back to Coinbase 1-minute candles if the tab was closed.
+- $10,000 paper balance, simulated $250,000 house pool, 10 points per expiry traded (max 24/day).
+- State lives in the browser's localStorage.
 
-## Learn More
+## Not yet
 
-To learn more about Next.js, take a look at the following resources:
+- Accounts, a shared pool and the leaderboard (needs a backend — Supabase is the plan).
+- 15-minute expiries, macro-event pauses, exposure-based edge skew.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Rules source: the Expiry mechanism one-pager. Code: `src/lib/pricing.ts` (rules), `src/lib/feeds.ts` (prices, settlement), `src/lib/schedule.ts` (expiries), `src/app/page.tsx` (UI).
