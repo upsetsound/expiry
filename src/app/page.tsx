@@ -6,6 +6,7 @@ import { ASSETS, TICK, isDemo, useMarket, type Asset, type MarketState } from "@
 import { settledToast, useLocalAccount, type AccountApi, type Notify, type Position, type TapeItem, type Trader } from "@/lib/account";
 import { useRoundResults, type RoundResult } from "@/lib/useRoundResults";
 import { formatMultiple } from "@/lib/share";
+import { sounds, useSound } from "@/lib/sound";
 import { useLiveAccount } from "@/lib/liveAccount";
 import {
   MAX_STRIKE_STEPS,
@@ -50,6 +51,22 @@ function Chevron({ dir = "down" }: { dir?: "down" | "up" | "left" | "right" }) {
   return (
     <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" style={{ transform: `rotate(${rot}deg)` }}>
       <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function Speaker({ muted }: { muted: boolean }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+      <path d="M11 5 6 9H3v6h3l5 4z" fill="currentColor" stroke="none" />
+      {muted ? (
+        <path d="m16 9 6 6m0-6-6 6" />
+      ) : (
+        <>
+          <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+          <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+        </>
+      )}
     </svg>
   );
 }
@@ -206,6 +223,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   async function buy() {
     if (!account.signedIn) return account.signIn?.();
     if (!ticket || ticket.block || strike === null || !spot || buying) return;
+    sounds.click();
     setBuying(true);
     const r = await account.buy({ asset, side, strike, tenor, expiry, premium: amt, perUnit: ticket.perUnit, spot, units: ticket.units, maxPayout: ticket.mp });
     setBuying(false);
@@ -245,13 +263,31 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   // Round results (open -> settled, grouped per round): settlement price flash on the chart, toasts.
   const [settled$, setSettled$] = useState<{ asset: Asset; tenor: Tenor; expiry: number; price: number; until: number } | null>(null);
   const [win, setWin] = useState<RoundResult | null>(null);
+  const sound = useSound();
   useRoundResults(account.positions, (r: RoundResult) => {
     setSettled$({ asset: r.asset, tenor: r.tenor, expiry: r.expiry, price: r.settle, until: Date.now() + 2_000 });
     // Profitable rounds get the win card; losses keep the small red toast.
+    if (r.pnl > 0) sounds.win();
+    else sounds.loss();
     if (r.pnl > 0) setWin(r);
     else if (r.positions.length === 1) settledToast(r.positions[0], r.settle, r.payout, say);
     else say(`${r.asset} ${TENORS[r.tenor].label} round settled at ${num(r.settle, r.asset === "BTC" ? 0 : 2)} · ${signed(r.pnl, (x) => usd(x))}`, r.pnl >= 0 ? "pos" : "neg");
   });
+
+  // A quiet tick each second in the last 5 seconds of any round I hold.
+  const lastTick = useRef(0);
+  useEffect(() => {
+    const id = setInterval(() => {
+      const t = Date.now();
+      const sec = Math.floor(t / 1000);
+      if (sec === lastTick.current) return;
+      if (account.positions.some((p) => p.status === "open" && p.expiry - t > 0 && p.expiry - t <= 5_000)) {
+        lastTick.current = sec;
+        sounds.tick();
+      }
+    }, 100);
+    return () => clearInterval(id);
+  }, [account.positions]);
 
   // Closing round: while I hold positions in this asset/tenor whose sales have closed, the chart keeps showing
   // that round (and for the 2s settlement flash after it settles); the round on sale is drawn faintly.
@@ -454,6 +490,9 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
           </div>
         </div>
         <div className="nav-right">
+          <button className="mute" onClick={sound.toggle} aria-label={sound.muted ? "Turn sounds on" : "Mute sounds"} aria-pressed={sound.muted} title={sound.muted ? "Sounds off" : "Sounds on"}>
+            <Speaker muted={sound.muted} />
+          </button>
           <span className="badge">Paper</span>
           {live && account.ready && !account.signedIn ? (
             <button className="signin" onClick={() => account.signIn?.()}>
