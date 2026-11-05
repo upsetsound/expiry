@@ -1,26 +1,29 @@
-// Expiry schedule: hourly at the top of each UTC hour, daily at 08:00 UTC.
+// Expiry rounds. Every tenor expires on the clock (UTC), back to back.
+// cutoff: sales stop this long before expiry. window: settlement averages the price over this final stretch.
 
-export type Tenor = "1h" | "1d";
+export type Tenor = "1m" | "5m" | "15m" | "1h";
 
-export const SALES_STOP_MS: Record<Tenor, number> = {
-  "1h": 10 * 60_000,
-  "1d": 60 * 60_000,
+export const TENORS: Record<Tenor, { ms: number; cutoff: number; window: number; label: string }> = {
+  "1m": { ms: 60_000, cutoff: 15_000, window: 5_000, label: "1m" },
+  "5m": { ms: 300_000, cutoff: 30_000, window: 15_000, label: "5m" },
+  "15m": { ms: 900_000, cutoff: 60_000, window: 30_000, label: "15m" },
+  "1h": { ms: 3_600_000, cutoff: 600_000, window: 300_000, label: "1h" },
 };
+export const TENOR_LIST: Tenor[] = ["1m", "5m", "15m", "1h"];
 
-const HOUR = 60 * 60_000;
-const DAY = 24 * HOUR;
-
-// Next tradable expiry: the first one whose sales cutoff is still ahead.
+// Next expiry that still has sales open.
 export function nextExpiry(tenor: Tenor, now: number): number {
-  if (tenor === "1h") {
-    let t = Math.ceil((now + 1) / HOUR) * HOUR;
-    while (t - SALES_STOP_MS["1h"] <= now) t += HOUR;
-    return t;
-  }
-  const d = new Date(now);
-  let t = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 8, 0, 0);
-  while (t - SALES_STOP_MS["1d"] <= now) t += DAY;
+  const { ms, cutoff } = TENORS[tenor];
+  let t = Math.ceil((now + 1) / ms) * ms;
+  while (t - cutoff <= now) t += ms;
   return t;
+}
+
+// Share of the current round that has elapsed, 0..1 (for the progress bar).
+export function roundProgress(tenor: Tenor, expiry: number, now: number): number {
+  const { ms, cutoff } = TENORS[tenor];
+  const start = expiry - ms - cutoff;
+  return Math.min(1, Math.max(0, (now - start) / (ms)));
 }
 
 export function formatCountdown(ms: number): string {
@@ -33,11 +36,10 @@ export function formatCountdown(ms: number): string {
   return h > 0 ? `${h}:${pad(m)}:${pad(sec)}` : `${m}:${pad(sec)}`;
 }
 
-export function formatExpiry(t: number): string {
-  return new Date(t).toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
+export function formatClock(t: number, seconds = true): string {
+  return new Date(t).toLocaleTimeString(undefined, {
     hour: "numeric",
     minute: "2-digit",
+    ...(seconds ? { second: "2-digit" } : {}),
   });
 }

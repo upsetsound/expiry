@@ -87,3 +87,10 @@ export function maxPayout(side: Side, spot: number, strike: number, units: numbe
   const stress = side === "call" ? spot + 3 * em : spot - 3 * em;
   return Math.min(units * intrinsic(side, stress, strike), RULES.payoutCap * premium);
 }
+
+// Chance the option finishes in the money under the pricing vol (no edge).
+export function probITM(side: Side, spot: number, strike: number, sigma: number, T: number): number {
+  if (T <= 0 || sigma <= 0) return intrinsic(side, spot, strike) > 0 ? 1 : 0;
+  const d2 = (Math.log(spot / strike) - 0.5 * sigma * sigma * T) / (sigma * Math.sqrt(T));
+  return side === "call" ? normCdf(d2) : normCdf(-d2);
+}

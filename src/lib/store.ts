@@ -34,7 +34,14 @@ export type Account = {
 
 export const START_BALANCE = 10_000;
 export const START_POOL = 250_000;
-const KEY = "expiry.paper.v1";
+// Demo mode (?demo) keeps its own account so simulated prices never mix with real ones.
+const key = () => {
+  try {
+    return new URLSearchParams(window.location.search).has("demo") ? "expiry.paper.v2.demo" : "expiry.paper.v2";
+  } catch {
+    return "expiry.paper.v2";
+  }
+};
 
 export function freshAccount(): Account {
   return {
@@ -51,7 +58,7 @@ export function freshAccount(): Account {
 
 export function loadAccount(): Account {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(key());
     if (raw) return { ...freshAccount(), ...JSON.parse(raw) };
   } catch {}
   return freshAccount();
@@ -59,7 +66,7 @@ export function loadAccount(): Account {
 
 export function saveAccount(a: Account) {
   try {
-    localStorage.setItem(KEY, JSON.stringify(a));
+    localStorage.setItem(key(), JSON.stringify(a));
   } catch {}
 }
 

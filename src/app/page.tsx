@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useMemo, useRef, useState } from "react";
-import Chart, { LOOKBACKS } from "./Chart";
+import Chart from "./Chart";
 import { ASSETS, TICK, fetchSettlementFallback, twap, useMarket, type Asset } from "@/lib/feeds";
 import {
   RULES,
@@ -9,31 +9,28 @@ import {
   maxPayout,
   payout as payoutFor,
   pricingVol,
+  probITM,
   quote,
-  strikeLadder,
   yearsUntil,
   type Side,
 } from "@/lib/pricing";
-import { SALES_STOP_MS, formatCountdown, formatExpiry, nextExpiry, type Tenor } from "@/lib/schedule";
+import { TENORS, TENOR_LIST, formatClock, formatCountdown, nextExpiry, roundProgress, type Tenor } from "@/lib/schedule";
 import { START_BALANCE, START_POOL, TOP_UP_BELOW, WEEK_MS, freshAccount, loadAccount, saveAccount, type Account, type Position } from "@/lib/store";
 
-const SETTLE_WINDOW_MS = 5 * 60_000;
 const DAY_MS = 24 * 60 * 60_000;
-const ICON: Record<Asset, string> = { BTC: "₿", ETH: "Ξ" };
+const DEFAULT_SPAN: Record<Tenor, number> = { "1m": 100_000, "5m": 6 * 60_000, "15m": 20 * 60_000, "1h": 75 * 60_000 };
 
 const usd = (n: number, d = 2) =>
   n.toLocaleString(undefined, { style: "currency", currency: "USD", minimumFractionDigits: d, maximumFractionDigits: d });
-const compact = (n: number) =>
-  n.toLocaleString(undefined, { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 2 });
+const compact = (n: number) => n.toLocaleString(undefined, { style: "currency", currency: "USD", notation: "compact", maximumFractionDigits: 2 });
 const num = (n: number, d = 0) => n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
 const pct = (n: number, d = 1) => `${(n * 100).toFixed(d)}%`;
 const signed = (n: number, f: (x: number) => string) => `${n >= 0 ? "+" : "−"}${f(Math.abs(n))}`;
 
 type View = "trade" | "portfolio" | "house" | "leaderboard";
 type BottomTab = "positions" | "history" | "leaderboard" | "status";
-type Menu = "asset" | "expiry" | "range" | "more" | null;
 
-function Mark({ size = 22 }: { size?: number }) {
+function Mark({ size = 20 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 100 100" aria-hidden="true">
       <path d="M50 50 L50 12 A38 38 0 1 0 88 50 Z" fill="var(--mint)" stroke="var(--mint)" strokeWidth={6} strokeLinejoin="round" />
@@ -41,11 +38,20 @@ function Mark({ size = 22 }: { size?: number }) {
   );
 }
 
-function Chevron({ up = false }: { up?: boolean }) {
+function Chevron({ dir = "down" }: { dir?: "down" | "up" | "left" | "right" }) {
+  const rot = { down: 0, up: 180, left: 90, right: -90 }[dir];
   return (
-    <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" style={{ transform: up ? "rotate(180deg)" : undefined }}>
+    <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" style={{ transform: `rotate(${rot}deg)` }}>
       <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" strokeLinejoin="round" />
     </svg>
+  );
+}
+
+function Coin({ asset, small = false }: { asset: Asset; small?: boolean }) {
+  return (
+    <span className={`coin ${small ? "sm" : ""}`} aria-hidden="true">
+      {asset === "BTC" ? "₿" : "Ξ"}
+    </span>
   );
 }
 
@@ -54,30 +60,31 @@ export default function Home() {
   const [acct, setAcct] = useState<Account | null>(null);
   const [view, setView] = useState<View>("trade");
   const [bottom, setBottom] = useState<BottomTab>("positions");
-  const [menu, setMenu] = useState<Menu>(null);
+  const [menu, setMenu] = useState<"asset" | "more" | null>(null);
   const [asset, setAsset] = useState<Asset>("BTC");
-  const [tenor, setTenor] = useState<Tenor>("1h");
-  const [lookback, setLookback] = useState(1);
+  const [tenor, setTenor] = useState<Tenor>("1m");
   const [side, setSide] = useState<Side>("call");
-  const [strike, setStrike] = useState<number | null>(null);
-  const [amount, setAmount] = useState("25");
-  const [flash, setFlash] = useState<string | null>(null);
+  const [amount, setAmount] = useState("10");
+  const [toast, setToast] = useState<{ text: string; tone: "pos" | "neg" | "info" } | null>(null);
   const [resetArmed, setResetArmed] = useState(false);
   const [equityOpen, setEquityOpen] = useState(false);
+  const [follow, setFollow] = useState(true);
   const settling = useRef<Set<string>>(new Set());
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const now = Date.now();
 
-  useEffect(() => setAcct(loadAccount()), []);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    setAcct(loadAccount());
+    setMounted(true);
+  }, []);
   useEffect(() => {
     if (acct) saveAccount(acct);
   }, [acct]);
 
-  // Close any open dropdown on an outside click or Escape.
   useEffect(() => {
     if (!menu) return;
-    const close = (e: MouseEvent) => {
-      if (!(e.target as HTMLElement).closest("[data-menu]")) setMenu(null);
-    };
+    const close = (e: MouseEvent) => !(e.target as HTMLElement).closest("[data-menu]") && setMenu(null);
     const esc = (e: KeyboardEvent) => e.key === "Escape" && setMenu(null);
     document.addEventListener("mousedown", close);
     document.addEventListener("keydown", esc);
@@ -87,49 +94,49 @@ export default function Home() {
     };
   }, [menu]);
 
+  const say = (text: string, tone: "pos" | "neg" | "info" = "info") => {
+    setToast({ text, tone });
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 3500);
+  };
+
   const spot = market.price[asset];
   const sigma = pricingVol(market.implied[asset], market.realized[asset]);
   const expiry = nextExpiry(tenor, now);
   const T = yearsUntil(expiry, now);
   const em = spot ? expectedMove(spot, sigma, T) : 0;
-  const ladderKey = `${asset}-${expiry}`;
   const dec = asset === "BTC" ? 0 : 2;
 
-  // Fix the strike ladder for an expiry the first time it is shown; drop ladders older than 2 days.
-  useEffect(() => {
-    if (!acct || !spot || acct.ladders[ladderKey]) return;
-    const strikes = strikeLadder(spot, sigma, T, TICK[asset]);
-    const cutoff = Date.now() - 2 * DAY_MS;
-    setAcct((a) => {
-      if (!a) return a;
-      const kept = Object.fromEntries(Object.entries(a.ladders).filter(([k]) => Number(k.split("-")[1]) > cutoff));
-      return { ...a, ladders: { ...kept, [ladderKey]: strikes } };
-    });
-  }, [acct, spot, sigma, T, ladderKey, asset]);
+  // Strikes are steps away from the at-the-money strike, so they follow the price.
+  // Step = a round number near half an expected move (at least one tick).
+  const step = useMemo(() => {
+    if (!em) return TICK[asset];
+    const raw = em * 0.5;
+    const mag = 10 ** Math.floor(Math.log10(raw));
+    const n = raw / mag;
+    const nice = (n < 1.5 ? 1 : n < 3.5 ? 2.5 : n < 7 ? 5 : 10) * mag;
+    return Math.max(TICK[asset], Math.round(nice / TICK[asset]) * TICK[asset]);
+  }, [em, asset]);
+  const MAX_OFF = 4;
+  const [strikeOff, setStrikeOff] = useState(0);
+  useEffect(() => setStrikeOff(0), [asset]);
+  const atmStrike = spot ? Math.round(spot / step) * step : null;
+  const strike = atmStrike !== null ? atmStrike + strikeOff * step : null;
 
-  const savedLadder = acct?.ladders[ladderKey];
-  const ladder = useMemo(() => savedLadder ?? [], [savedLadder]);
-  const atm = ladder.length && spot ? ladder.reduce((b, k) => (Math.abs(k - spot) < Math.abs(b - spot) ? k : b), ladder[0]) : null;
-
-  useEffect(() => {
-    if (strike !== null && !ladder.includes(strike)) setStrike(null);
-    if (strike === null && atm !== null) setStrike(atm);
-  }, [ladder, strike, atm]);
-
-  // Settle expired positions: live 5-minute TWAP when this page saw the window, else Coinbase candles.
+  // Settle expired positions with the sampled average, else Coinbase candles.
   useEffect(() => {
     if (!acct) return;
     const due = acct.positions.filter((p) => p.status === "open" && p.expiry <= now && !settling.current.has(p.id));
     for (const p of due) {
       settling.current.add(p.id);
-      const from = p.expiry - SETTLE_WINDOW_MS;
-      const live = twap(market.samples[p.asset], from, p.expiry);
+      const from = p.expiry - TENORS[p.tenor].window;
+      const lv = twap(market.samples.current[p.asset], from, p.expiry);
       const finish = (price: number) => {
+        const paid = payoutFor(p.side, price, p.strike, p.units, p.premium);
         setAcct((a) => {
           if (!a) return a;
           const pos = a.positions.find((x) => x.id === p.id);
           if (!pos || pos.status !== "open") return a;
-          const paid = payoutFor(pos.side, price, pos.strike, pos.units, pos.premium);
           return {
             ...a,
             balance: a.balance + paid,
@@ -137,8 +144,10 @@ export default function Home() {
             positions: a.positions.map((x) => (x.id === p.id ? { ...x, status: "settled", settle: price, payout: paid } : x)),
           };
         });
+        const pnl = paid - p.premium;
+        say(`${p.asset} ${num(p.strike)} ${p.side} settled at ${num(price, p.asset === "BTC" ? 0 : 2)} · ${signed(pnl, (x) => usd(x))}`, pnl >= 0 ? "pos" : "neg");
       };
-      if (live.price && live.coverage >= 0.6) finish(live.price);
+      if (lv.price && lv.coverage >= 0.6) finish(lv.price);
       else
         fetchSettlementFallback(p.asset, from, p.expiry).then((price) => {
           if (price) finish(price);
@@ -148,34 +157,28 @@ export default function Home() {
   }, [acct, now, market.samples]);
 
   const amt = Math.max(0, parseFloat(amount) || 0);
-  const salesOpen = expiry - now > SALES_STOP_MS[tenor];
 
   const ticket = useMemo(() => {
     if (!spot || strike === null || !acct) return null;
     const perUnit = quote(side, spot, strike, sigma, T);
     const units = perUnit > 0 ? amt / perUnit : 0;
     const breakeven = side === "call" ? strike + perUnit : strike - perUnit;
-    const target = side === "call" ? strike + em : strike - em;
-    const ifTarget = payoutFor(side, target, strike, units, amt);
+    const chance = probITM(side, spot, strike, sigma, T);
     const mp = maxPayout(side, spot, strike, units, amt, em);
-
     const openPos = acct.positions.filter((p) => p.status === "open");
-    const thisExpiry = openPos.filter((p) => p.asset === asset && p.expiry === expiry);
-    const spentHere = thisExpiry.reduce((s, p) => s + p.premium, 0);
-    const sideLiab = thisExpiry.filter((p) => p.side === side).reduce((s, p) => s + p.maxPayout, 0);
+    const here = openPos.filter((p) => p.asset === asset && p.expiry === expiry);
+    const spentHere = here.reduce((s, p) => s + p.premium, 0);
+    const sideLiab = here.filter((p) => p.side === side).reduce((s, p) => s + p.maxPayout, 0);
     const totalLiab = openPos.reduce((s, p) => s + p.maxPayout, 0);
-
     let block: string | null = null;
-    if (!salesOpen) block = "Sales closed for this expiry";
-    else if (amt < RULES.minPremium) block = `Minimum ${usd(RULES.minPremium, 0)}`;
-    else if (amt > RULES.maxPremiumPerPosition) block = `Max ${usd(RULES.maxPremiumPerPosition, 0)} per position`;
+    if (amt < RULES.minPremium) block = `Minimum ${usd(RULES.minPremium, 0)}`;
+    else if (amt > RULES.maxPremiumPerPosition) block = `Max ${usd(RULES.maxPremiumPerPosition, 0)} per trade`;
     else if (spentHere + amt > RULES.maxPremiumPerExpiry) block = `Max ${usd(RULES.maxPremiumPerExpiry, 0)} per expiry`;
     else if (amt > acct.balance) block = "Not enough balance";
-    else if (sideLiab + mp > RULES.sidePoolShare * acct.pool) block = "Pool limit reached for this side";
-    else if (totalLiab + mp > RULES.totalPoolShare * acct.pool) block = "Pool limit reached";
+    else if (sideLiab + mp > RULES.sidePoolShare * acct.pool || totalLiab + mp > RULES.totalPoolShare * acct.pool) block = "Pool limit reached";
     const room = Math.max(0, Math.min(RULES.maxPremiumPerPosition, RULES.maxPremiumPerExpiry - spentHere, acct.balance));
-    return { perUnit, units, breakeven, target, ifTarget, mp, block, room };
-  }, [spot, strike, acct, side, sigma, T, amt, em, asset, expiry, salesOpen]);
+    return { perUnit, units, breakeven, chance, mp, block, room };
+  }, [spot, strike, acct, side, sigma, T, amt, em, asset, expiry]);
 
   function buy() {
     if (!acct || !ticket || ticket.block || strike === null || !spot) return;
@@ -203,14 +206,13 @@ export default function Home() {
       pool: acct.pool + amt,
       points: acct.points + (earns ? 10 : 0),
       pointsDay: earns ? { day, count: pd.count + 1 } : pd,
-      tradedExpiries: earns ? [...acct.tradedExpiries, key] : acct.tradedExpiries,
-      positions: [pos, ...acct.positions],
+      tradedExpiries: earns ? [...acct.tradedExpiries.slice(-500), key] : acct.tradedExpiries,
+      positions: [pos, ...acct.positions].slice(0, 500),
     });
-    setFlash(`Bought ${asset} ${num(strike)} ${side} · ${usd(amt)}${earns ? " · +10 pts" : ""}`);
-    setTimeout(() => setFlash(null), 3000);
+    say(`Bought ${asset} ${num(strike)} ${side} · ${usd(amt)}${earns ? " · +10 pts" : ""}`);
   }
 
-  // Derived numbers for the header, panels and tabs.
+  // Derived numbers.
   const positions = acct?.positions ?? [];
   const open = positions.filter((p) => p.status === "open");
   const settled = positions.filter((p) => p.status === "settled");
@@ -228,23 +230,19 @@ export default function Home() {
   const callOi = assetOpen.filter((p) => p.side === "call").reduce((s, p) => s + p.premium, 0);
   const putOi = assetOpen.filter((p) => p.side === "put").reduce((s, p) => s + p.premium, 0);
   const vol24 = positions.filter((p) => p.asset === asset && now - p.boughtAt < DAY_MS).reduce((s, p) => s + p.premium, 0);
-  const change = (a: Asset) => {
-    const p = market.price[a];
-    const o = market.open24[a];
-    return p && o ? p / o - 1 : null;
-  };
-  const tape = positions.slice(0, 14);
+  const change = (a: Asset) => (market.price[a] && market.open24[a] ? market.price[a]! / market.open24[a]! - 1 : null);
   const canTopUp = acct && acct.balance < TOP_UP_BELOW && now - acct.lastTopUp > WEEK_MS;
   const premiumsIn = positions.reduce((s, p) => s + p.premium, 0);
   const paidOut = settled.reduce((s, p) => s + (p.payout ?? 0), 0);
-
-  const series = useMemo(() => {
-    const live = market.samples[asset];
-    const first = live.length ? live[0].t : Infinity;
-    return [...market.history[asset].filter((h) => h.t < first), ...live];
-  }, [market.samples, market.history, asset]);
-
-  const live = market.venues[asset] >= 2;
+  const wins = settled.filter((p) => (p.payout ?? 0) > p.premium).length;
+  const tape = positions.slice(0, 16);
+  const liveFeed = market.venues[asset] >= 2;
+  const progress = roundProgress(tenor, expiry, now);
+  const chartPositions = useMemo(
+    () => open.filter((p) => p.asset === asset && p.expiry === expiry).map((p) => ({ id: p.id, side: p.side, strike: p.strike })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [acct?.positions, asset, expiry],
+  );
 
   function resetAccount() {
     if (resetArmed) {
@@ -257,13 +255,19 @@ export default function Home() {
     }
   }
 
-  const positionRows = (
+  const optLabel = (p: Position) => (
+    <>
+      <Coin asset={p.asset} small /> {num(p.strike, p.asset === "BTC" ? 0 : 1)} <span className={p.side}>{p.side === "call" ? "Call" : "Put"}</span>{" "}
+      <span className="muted">{TENORS[p.tenor].label}</span>
+    </>
+  );
+
+  const positionsTable = (
     <table className="tbl">
       <thead>
         <tr>
           <th scope="col">Option</th>
-          <th scope="col">Expiry</th>
-          <th scope="col">Size</th>
+          <th scope="col">Expires in</th>
           <th scope="col">Paid</th>
           <th scope="col">Value</th>
           <th scope="col">P/L</th>
@@ -276,13 +280,8 @@ export default function Home() {
           const per = p.premium / p.units;
           return (
             <tr key={p.id}>
-              <td>
-                <strong>{p.asset}</strong> {num(p.strike)} <span className={p.side}>{p.side === "call" ? "Call" : "Put"}</span>
-              </td>
+              <td>{optLabel(p)}</td>
               <td>{p.expiry > now ? formatCountdown(p.expiry - now) : "Settling…"}</td>
-              <td>
-                {num(p.units, p.asset === "BTC" ? 5 : 4)} {p.asset}
-              </td>
               <td>{usd(p.premium)}</td>
               <td>{v !== null ? usd(v) : "—"}</td>
               <td className={v !== null && v - p.premium >= 0 ? "pos" : "neg"}>{v !== null ? signed(v - p.premium, (x) => usd(x)) : "—"}</td>
@@ -294,7 +293,7 @@ export default function Home() {
     </table>
   );
 
-  const historyRows = (
+  const historyTable = (
     <table className="tbl">
       <thead>
         <tr>
@@ -311,10 +310,8 @@ export default function Home() {
           const pnl = (p.payout ?? 0) - p.premium;
           return (
             <tr key={p.id}>
-              <td>
-                <strong>{p.asset}</strong> {num(p.strike)} <span className={p.side}>{p.side === "call" ? "Call" : "Put"}</span>
-              </td>
-              <td>{formatExpiry(p.expiry)}</td>
+              <td>{optLabel(p)}</td>
+              <td>{formatClock(p.expiry)}</td>
               <td>{num(p.settle ?? 0, p.asset === "BTC" ? 0 : 2)}</td>
               <td>{usd(p.premium)}</td>
               <td>{usd(p.payout ?? 0)}</td>
@@ -328,26 +325,25 @@ export default function Home() {
 
   const leaderboard = (
     <div className="empty">
-      <p>The public leaderboard goes live with accounts.</p>
+      <p>The leaderboard goes live with accounts.</p>
       <p className="muted">
-        Your paper stats so far: {settled.length} settled · {signed(realizedPnl, (x) => usd(x))} realized · {num(acct?.points ?? 0)} points
+        You: {settled.length} settled · {settled.length ? pct(wins / settled.length, 0) : "—"} win rate · {signed(realizedPnl, (x) => usd(x))}
       </p>
     </div>
   );
 
-  const status = (
+  const statusList = (
     <dl className="status">
       <div>
-        <dt>Price venues</dt>
+        <dt>Price feed</dt>
         <dd>
-          {market.venues.BTC} of 4 live (BTC) · {market.venues.ETH} of 4 live (ETH)
+          BTC {market.venues.BTC}/4 · ETH {market.venues.ETH}/4 venues (Coinbase, Binance, OKX, Hyperliquid)
         </dd>
       </div>
       <div>
-        <dt>Pricing vol ({asset})</dt>
+        <dt>Pricing vol · {asset}</dt>
         <dd>
-          {pct(sigma, 0)} = max(DVOL {market.implied[asset] ? pct(market.implied[asset]!, 0) : "n/a"}, 1.25 × realized{" "}
-          {pct(market.realized[asset], 0)}, 35% floor)
+          {pct(sigma, 0)} — max of DVOL {market.implied[asset] ? pct(market.implied[asset]!, 0) : "n/a"}, 1.25 × realized {pct(market.realized[asset], 0)}, 35%
         </dd>
       </div>
       <div>
@@ -356,16 +352,19 @@ export default function Home() {
       </div>
       <div>
         <dt>Settlement</dt>
-        <dd>5-minute average of the median across Coinbase, Binance, OKX, Hyperliquid</dd>
+        <dd>Average of the median price over the final {TENORS[tenor].window / 1000}s ({tenor} rounds)</dd>
       </div>
       <div>
         <dt>Limits</dt>
         <dd>
-          {usd(RULES.maxPremiumPerPosition, 0)}/position · {usd(RULES.maxPremiumPerExpiry, 0)}/expiry · {RULES.payoutCap}× payout cap
+          {usd(RULES.maxPremiumPerPosition, 0)} per trade · {usd(RULES.maxPremiumPerExpiry, 0)} per expiry · {RULES.payoutCap}× payout cap
         </dd>
       </div>
     </dl>
   );
+
+  // Everything here depends on the clock and local storage, so render only in the browser.
+  if (!mounted) return <div className="app" />;
 
   return (
     <div className="app">
@@ -382,19 +381,19 @@ export default function Home() {
           ))}
           <div className="dd" data-menu>
             <button className="tab" onClick={() => setMenu(menu === "more" ? null : "more")} aria-expanded={menu === "more"}>
-              More <Chevron up={menu === "more"} />
+              More <Chevron dir={menu === "more" ? "up" : "down"} />
             </button>
             {menu === "more" && (
               <div className="menu">
-                <button onClick={() => { setView("house"); setMenu(null); }}>How the pool works</button>
                 <button onClick={() => { setBottom("status"); setView("trade"); setMenu(null); }}>Pricing &amp; status</button>
+                <button onClick={() => { setView("house"); setMenu(null); }}>How the pool works</button>
                 <button onClick={resetAccount}>{resetArmed ? "Click again to reset" : "Reset paper account"}</button>
               </div>
             )}
           </div>
         </div>
         <div className="nav-right">
-          <span className="paper">Paper</span>
+          <span className="badge">Paper</span>
           <span className="navstat">
             <span className="muted">Balance</span> {acct ? usd(acct.balance) : "—"}
           </span>
@@ -415,28 +414,31 @@ export default function Home() {
             <div className="bar">
               <div className="dd" data-menu>
                 <button className="pill asset" onClick={() => setMenu(menu === "asset" ? null : "asset")} aria-expanded={menu === "asset"}>
-                  <span className="coin" aria-hidden="true">{ICON[asset]}</span>
+                  <Coin asset={asset} />
                   <strong>{asset}</strong>
                   <span className="sep" aria-hidden="true" />
                   <span className="px">{spot ? usd(spot, 2) : "—"}</span>
-                  {change(asset) !== null && <span className={change(asset)! >= 0 ? "pos" : "neg"}>{signed(change(asset)!, (x) => pct(x, 2))}</span>}
-                  <Chevron up={menu === "asset"} />
+                  <span className={`chg ${change(asset) !== null && change(asset)! < 0 ? "neg" : "pos"}`}>
+                    {change(asset) !== null ? signed(change(asset)!, (x) => pct(x, 2)) : ""}
+                  </span>
+                  <Chevron dir={menu === "asset" ? "up" : "down"} />
                 </button>
                 {menu === "asset" && (
                   <div className="menu wide">
                     {ASSETS.map((a) => (
-                      <button key={a} className={a === asset ? "on" : ""} onClick={() => { setAsset(a); setStrike(null); setMenu(null); }}>
-                        <span className="coin" aria-hidden="true">{ICON[a]}</span>
+                      <button key={a} className={a === asset ? "on" : ""} onClick={() => { setAsset(a); setMenu(null); setFollow(true); }}>
+                        <Coin asset={a} small />
                         <strong>{a}</strong>
                         <span className="grow" />
                         <span>{market.price[a] ? usd(market.price[a]!, 2) : "—"}</span>
-                        {change(a) !== null && <span className={change(a)! >= 0 ? "pos" : "neg"}>{signed(change(a)!, (x) => pct(x, 2))}</span>}
+                        <span className={`chg ${change(a) !== null && change(a)! < 0 ? "neg" : "pos"}`}>
+                          {change(a) !== null ? signed(change(a)!, (x) => pct(x, 2)) : ""}
+                        </span>
                       </button>
                     ))}
                   </div>
                 )}
               </div>
-
               <div className="pill stats">
                 <span className="stat">
                   <span className="lbl">Vol 24h</span> {compact(vol24)}
@@ -447,51 +449,31 @@ export default function Home() {
                 <span className="stat">
                   <span className="lbl">Put OI</span> {compact(putOi)}
                 </span>
-                <div className="dd stat" data-menu>
-                  <button className="ddbtn" onClick={() => setMenu(menu === "expiry" ? null : "expiry")} aria-expanded={menu === "expiry"}>
-                    <span className="lbl">Expiry</span> {tenor === "1h" ? "1H" : "1D"} · {formatCountdown(expiry - now)} <Chevron up={menu === "expiry"} />
+                {follow ? (
+                  <span className={`stat live ${liveFeed ? "" : "off"}`}>{liveFeed ? "LIVE" : "CONNECTING"}</span>
+                ) : (
+                  <button className="stat reset" onClick={() => setFollow(true)}>
+                    RESET
                   </button>
-                  {menu === "expiry" && (
-                    <div className="menu">
-                      {(["1h", "1d"] as Tenor[]).map((t) => (
-                        <button key={t} className={t === tenor ? "on" : ""} onClick={() => { setTenor(t); setStrike(null); setMenu(null); }}>
-                          {t === "1h" ? "1 hour" : "1 day"} <span className="muted">· {formatExpiry(nextExpiry(t, now))}</span>
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <div className="dd stat" data-menu>
-                  <button className="ddbtn" onClick={() => setMenu(menu === "range" ? null : "range")} aria-expanded={menu === "range"}>
-                    {LOOKBACKS[lookback].label} <Chevron up={menu === "range"} />
-                  </button>
-                  {menu === "range" && (
-                    <div className="menu">
-                      {LOOKBACKS.map((l, i) => (
-                        <button key={l.label} className={i === lookback ? "on" : ""} onClick={() => { setLookback(i); setMenu(null); }}>
-                          {l.label}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-                <span className={`stat live ${live ? "" : "off"}`}>{live ? "LIVE" : "CONNECTING"}</span>
+                )}
               </div>
             </div>
-
             <div className="chartbox">
               <Chart
-                series={series}
-                now={now}
+                asset={asset}
+                samples={market.samples}
+                history={market.history}
                 spot={spot}
                 sigma={sigma}
                 expiry={expiry}
+                settleWindow={TENORS[tenor].window}
                 side={side}
                 strike={strike}
-                breakeven={ticket ? ticket.breakeven : null}
-                positions={open.filter((p) => p.asset === asset && p.expiry === expiry).map((p) => ({ id: p.id, side: p.side, strike: p.strike, premium: p.premium }))}
+                positions={chartPositions}
                 decimals={dec}
-                lookback={lookback}
+                defaultSpan={DEFAULT_SPAN[tenor]}
+                follow={follow}
+                onFollowChange={setFollow}
               />
             </div>
           </section>
@@ -499,9 +481,9 @@ export default function Home() {
           <aside className="side" aria-label="Trade">
             <div className="box">
               <button className="eq-head" onClick={() => setEquityOpen(!equityOpen)} aria-expanded={equityOpen}>
-                <Chevron up={equityOpen} /> <span>Account equity</span>
+                <Chevron dir={equityOpen ? "up" : "down"} /> Account equity
                 <span className="grow" />
-                <strong>{acct ? usd(acct.balance + openValue) : "—"}</strong>
+                <span>{acct ? usd(acct.balance + openValue) : "—"}</span>
               </button>
               {equityOpen && (
                 <dl className="kv">
@@ -515,89 +497,94 @@ export default function Home() {
                   </div>
                   <div>
                     <dt>Open P/L</dt>
-                    <dd className={openPnl >= 0 ? "pos" : "neg"}>{open.length ? signed(openPnl, (x) => usd(x)) : "—"}</dd>
+                    <dd className={open.length ? (openPnl >= 0 ? "pos" : "neg") : ""}>{open.length ? signed(openPnl, (x) => usd(x)) : "—"}</dd>
                   </div>
                 </dl>
               )}
             </div>
 
-            <div className="toggle" role="group" aria-label="Option type">
-              <button className={side === "call" ? "on call" : ""} onClick={() => setSide("call")}>
+            <div className="toggle" role="group" aria-label="Direction">
+              <button className={side === "call" ? "on call" : ""} onClick={() => setSide("call")} aria-pressed={side === "call"}>
                 ↗ Call
               </button>
-              <button className={side === "put" ? "on put" : ""} onClick={() => setSide("put")}>
+              <button className={side === "put" ? "on put" : ""} onClick={() => setSide("put")} aria-pressed={side === "put"}>
                 ↘ Put
               </button>
             </div>
 
-            <div className="field-head">
-              <span className="muted">Strike</span>
-              <span className="lbl">Cost per {asset === "BTC" ? "0.01" : "0.1"} · pays if</span>
-            </div>
-            <div className="strikes" role="listbox" aria-label="Strike">
-              {[...ladder].reverse().map((k) => {
-                const per = spot ? quote(side, spot, k, sigma, T) : 0;
-                const unit = asset === "BTC" ? 0.01 : 0.1;
-                const itm = spot ? (side === "call" ? k < spot : k > spot) : false;
-                return (
-                  <button
-                    key={k}
-                    role="option"
-                    aria-selected={k === strike}
-                    className={`strike-row ${k === strike ? "on" : ""} ${k === atm ? "atm" : ""}`}
-                    onClick={() => setStrike(k)}
-                  >
-                    <span className="k">{num(k)}</span>
-                    <span className="muted small">{spot ? signed(k / spot - 1, (x) => pct(x, 2)) : ""}</span>
-                    <span className="grow" />
-                    <span>{spot ? usd(per * unit) : "—"}</span>
-                    <span className="muted small">
-                      {side === "call" ? ">" : "<"} {num(side === "call" ? k + per : k - per, asset === "BTC" ? 0 : 1)}
-                    </span>
-                    {itm && <span className="itm">ITM</span>}
+            <div className="field">
+              <div className="field-row">
+                <span className="lbl">Expiry</span>
+                <span className="mono">
+                  {formatClock(expiry, tenor !== "1h")} · <strong>{formatCountdown(expiry - now)}</strong>
+                </span>
+              </div>
+              <div className="seg" role="group" aria-label="Expiry">
+                {TENOR_LIST.map((t) => (
+                  <button key={t} className={t === tenor ? "on" : ""} onClick={() => { setTenor(t); setFollow(true); }} aria-pressed={t === tenor}>
+                    {TENORS[t].label}
                   </button>
-                );
-              })}
+                ))}
+              </div>
+              <div className="progress" aria-hidden="true">
+                <span style={{ width: `${progress * 100}%` }} />
+              </div>
             </div>
 
-            <div className="field-head">
-              <span className="lbl">Premium (USDC)</span>
-            </div>
-            <div className="amount">
-              <button onClick={() => setAmount(String(Math.max(1, Math.round(amt / 2))))}>½×</button>
-              <button onClick={() => setAmount(String(Math.round(amt * 2)))}>2×</button>
-              <button onClick={() => ticket && setAmount(String(Math.floor(ticket.room)))}>Max</button>
-              <input inputMode="decimal" aria-label="Premium in USDC" value={amount} onChange={(e) => setAmount(e.target.value)} />
+            <div className="field">
+              <div className="field-row">
+                <span className="lbl">Strike</span>
+                <span className="muted small">{strikeOff === 0 ? "At the money" : spot && strike ? `${signed(strike / spot - 1, (x) => pct(x, 2))} from price` : ""}</span>
+              </div>
+              <div className="stepper">
+                <button aria-label="Lower strike" disabled={strikeOff <= -MAX_OFF} onClick={() => setStrikeOff(strikeOff - 1)}>
+                  <Chevron dir="left" />
+                </button>
+                <span className="strike-val">{strike !== null ? num(strike, asset === "BTC" ? 0 : 1) : "—"}</span>
+                <button aria-label="Higher strike" disabled={strikeOff >= MAX_OFF} onClick={() => setStrikeOff(strikeOff + 1)}>
+                  <Chevron dir="right" />
+                </button>
+              </div>
             </div>
 
-            {ticket && strike !== null && (
-              <dl className="kv summary">
-                <div>
-                  <dt>Breakeven</dt>
-                  <dd>{num(ticket.breakeven, asset === "BTC" ? 0 : 1)}</dd>
-                </div>
-                <div>
-                  <dt>If {asset} settles {num(ticket.target)}</dt>
-                  <dd className="pos">{usd(ticket.ifTarget)}</dd>
-                </div>
-                <div>
-                  <dt>Max payout</dt>
-                  <dd>
-                    {usd(RULES.payoutCap * amt, 0)} <span className="muted">({RULES.payoutCap}×)</span>
-                  </dd>
-                </div>
-              </dl>
-            )}
+            <div className="field">
+              <div className="field-row">
+                <span className="lbl">Premium (USDC)</span>
+              </div>
+              <div className="amount">
+                <button onClick={() => setAmount(String(Math.max(1, Math.round(amt / 2))))}>½×</button>
+                <button onClick={() => setAmount(String(Math.min(RULES.maxPremiumPerPosition, Math.round(amt * 2) || 1)))}>2×</button>
+                <button onClick={() => ticket && setAmount(String(Math.floor(ticket.room)))}>Max</button>
+                <input inputMode="decimal" aria-label="Premium in USDC" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} />
+              </div>
+            </div>
+
+            <dl className="kv summary">
+              <div>
+                <dt>Win chance</dt>
+                <dd>{ticket ? pct(ticket.chance, 0) : "—"}</dd>
+              </div>
+              <div>
+                <dt>Breakeven</dt>
+                <dd>{ticket ? num(ticket.breakeven, asset === "BTC" ? 0 : 1) : "—"}</dd>
+              </div>
+              <div>
+                <dt>Max payout</dt>
+                <dd>{usd(RULES.payoutCap * amt, 0)}</dd>
+              </div>
+            </dl>
 
             <button className={`buy ${side}`} onClick={buy} disabled={!ticket || !!ticket.block}>
-              {!ticket ? "Waiting for price…" : ticket.block ?? `Buy ${side === "call" ? "Call" : "Put"} · ${usd(amt)}`}
+              {!ticket ? "Waiting for price…" : ticket.block ?? `Buy ${side === "call" ? "Call" : "Put"}`}
             </button>
-            {flash && (
-              <p className="flash" role="status">
-                {flash}
-              </p>
-            )}
-            <p className="fine">Paper money. Max loss is the premium you pay.</p>
+
+            <div className="grow" />
+            <div className="box open-box">
+              <span>
+                Open positions <span className="muted">{open.length || "—"}</span>
+              </span>
+              <span className={open.length ? (openPnl >= 0 ? "pos" : "neg") : "muted"}>{open.length ? signed(openPnl, (x) => usd(x)) : ""}</span>
+            </div>
           </aside>
 
           <section className="bottom">
@@ -608,20 +595,21 @@ export default function Home() {
                   {b === "positions" && open.length > 0 && <span className="count">{open.length}</span>}
                 </button>
               ))}
-              <div className={`tape ${tape.length === 0 ? "empty-tape" : ""}`} aria-label="Recent trades">
-                {tape.length === 0 ? (
-                  <span className="muted small">No trades yet</span>
-                ) : (
+              <div className={`tape ${tape.length ? "" : "empty-tape"}`} aria-label="Recent trades">
+                {tape.length > 0 && (
                   <div className="tape-track">
                     {[...tape, ...tape].map((p, i) => {
-                      const won = p.status === "settled" && (p.payout ?? 0) > p.premium;
-                      const lost = p.status === "settled" && !won;
+                      const pnl = (p.payout ?? 0) - p.premium;
                       return (
-                        <span key={`${p.id}-${i}`} className={`chip ${p.side}`} aria-hidden={i >= tape.length}>
-                          <span className="coin sm">{ICON[p.asset]}</span>
-                          {p.status === "open" && <>{p.side === "call" ? "▲" : "▼"} {compact(p.premium)}</>}
-                          {won && <span className="pos">+{compact((p.payout ?? 0) - p.premium)}</span>}
-                          {lost && <span className="neg">−{compact(p.premium - (p.payout ?? 0))}</span>}
+                        <span key={`${p.id}-${i}`} className="chip" aria-hidden={i >= tape.length}>
+                          <Coin asset={p.asset} small />
+                          {p.status === "open" ? (
+                            <span className={p.side}>
+                              {p.side === "call" ? "▲" : "▼"} {compact(p.premium)}
+                            </span>
+                          ) : (
+                            <span className={pnl >= 0 ? "pos" : "neg"}>{signed(pnl, compact)}</span>
+                          )}
                         </span>
                       );
                     })}
@@ -630,12 +618,17 @@ export default function Home() {
               </div>
             </div>
             <div className="bbody">
-              {bottom === "positions" && (open.length ? positionRows : <p className="empty">No open options. Pick a strike and buy a call or put.</p>)}
-              {bottom === "history" && (settled.length ? historyRows : <p className="empty">Nothing settled yet.</p>)}
+              {bottom === "positions" && (open.length ? positionsTable : <p className="empty">No open positions.</p>)}
+              {bottom === "history" && (settled.length ? historyTable : <p className="empty">No settled trades yet.</p>)}
               {bottom === "leaderboard" && leaderboard}
-              {bottom === "status" && status}
+              {bottom === "status" && statusList}
             </div>
           </section>
+          {toast && (
+            <div className={`toast ${toast.tone}`} role="status">
+              {toast.text}
+            </div>
+          )}
         </div>
       )}
 
@@ -653,7 +646,7 @@ export default function Home() {
             </div>
             <div className="card">
               <span className="lbl">Win rate</span>
-              <strong>{settled.length ? pct(settled.filter((p) => (p.payout ?? 0) > p.premium).length / settled.length, 0) : "—"}</strong>
+              <strong>{settled.length ? pct(wins / settled.length, 0) : "—"}</strong>
             </div>
             <div className="card">
               <span className="lbl">Points</span>
@@ -661,9 +654,9 @@ export default function Home() {
             </div>
           </div>
           <h2>Open</h2>
-          {open.length ? positionRows : <p className="empty">No open options.</p>}
+          {open.length ? positionsTable : <p className="empty left">No open positions.</p>}
           <h2>History</h2>
-          {settled.length ? historyRows : <p className="empty">Nothing settled yet.</p>}
+          {settled.length ? historyTable : <p className="empty left">No settled trades yet.</p>}
         </main>
       )}
 
@@ -671,7 +664,7 @@ export default function Home() {
         <main className="page">
           <h1>House pool</h1>
           <p className="lead">
-            Premiums go into each expiry&apos;s escrow. At settlement, winners are paid from that escrow first, then from the pool, and whatever is left
+            Every premium goes into its round&apos;s escrow. At expiry, winners are paid from that escrow first, then from the pool; anything left over
             goes to the pool. In paper mode the pool is simulated and starts at {usd(START_POOL, 0)}.
           </p>
           <div className="cards">
@@ -692,7 +685,8 @@ export default function Home() {
               <strong className={acct && acct.pool - START_POOL >= 0 ? "pos" : "neg"}>{acct ? signed(acct.pool - START_POOL, (x) => usd(x, 0)) : "—"}</strong>
             </div>
           </div>
-          {status}
+          <h2>Rules</h2>
+          {statusList}
         </main>
       )}
 
