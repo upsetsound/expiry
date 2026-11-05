@@ -1,21 +1,23 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Chart from "./Chart";
-import { ASSETS, TICK, fetchSettlementFallback, twap, useMarket, type Asset } from "@/lib/feeds";
+import { ASSETS, TICK, isDemo, useMarket, type Asset, type MarketState } from "@/lib/feeds";
+import { useLocalAccount, type AccountApi, type Notify, type Position, type TapeItem, type Trader } from "@/lib/account";
+import { useLiveAccount } from "@/lib/liveAccount";
 import {
+  MAX_STRIKE_STEPS,
   RULES,
   bsPrice,
   expectedMove,
-  maxPayout,
-  payout as payoutFor,
+  priceTicket,
   pricingVol,
   probITM,
-  quote,
+  strikeStep,
   yearsUntil,
   type Side,
 } from "@/lib/pricing";
 import { TENORS, TENOR_LIST, formatClock, formatCountdown, nextExpiry, roundProgress, type Tenor } from "@/lib/schedule";
-import { START_BALANCE, START_POOL, TOP_UP_BELOW, WEEK_MS, freshAccount, loadAccount, saveAccount, type Account, type Position } from "@/lib/store";
+import { START_POOL } from "@/lib/store";
 
 const DAY_MS = 24 * 60 * 60_000;
 const DEFAULT_SPAN: Record<Tenor, number> = { "1m": 100_000, "5m": 6 * 60_000, "15m": 20 * 60_000, "1h": 75 * 60_000 };
@@ -55,9 +57,61 @@ function Coin({ asset, small = false }: { asset: Asset; small?: boolean }) {
   );
 }
 
+// Avatar + @handle for a trader (tape, nav, leaderboard).
+function Who({ trader, size = 16 }: { trader?: Trader | null; size?: number }) {
+  const handle = trader?.handle;
+  return (
+    <span className="who">
+      {trader?.avatar ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img className="avatar" src={trader.avatar} alt="" width={size} height={size} referrerPolicy="no-referrer" />
+      ) : (
+        <span className="avatar ph" style={{ width: size, height: size }} aria-hidden="true">
+          {(handle ?? "?").slice(0, 1).toUpperCase()}
+        </span>
+      )}
+      <span className="handle">{handle ? `@${handle}` : "anon"}</span>
+    </span>
+  );
+}
+
+type Toast = { text: string; tone: "pos" | "neg" | "info" };
+function useToast() {
+  const [toast, setToast] = useState<Toast | null>(null);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const say: Notify = useCallback((text, tone = "info") => {
+    setToast({ text, tone });
+    if (timer.current) clearTimeout(timer.current);
+    timer.current = setTimeout(() => setToast(null), 3500);
+  }, []);
+  return { toast, say };
+}
+
+// ?demo: local-only paper mode on simulated prices. Otherwise: multiplayer on Supabase.
 export default function Home() {
+  const [mode, setMode] = useState<"demo" | "live" | null>(null);
+  useEffect(() => setMode(isDemo() ? "demo" : "live"), []);
+  // Everything here depends on the clock and the browser, so render only in the browser.
+  if (!mode) return <div className="app" />;
+  return mode === "demo" ? <DemoApp /> : <LiveApp />;
+}
+
+function DemoApp() {
   const market = useMarket();
-  const [acct, setAcct] = useState<Account | null>(null);
+  const { toast, say } = useToast();
+  const account = useLocalAccount(market, say);
+  return <TradeApp market={market} account={account} toast={toast} say={say} />;
+}
+
+function LiveApp() {
+  const market = useMarket();
+  const { toast, say } = useToast();
+  const account = useLiveAccount(say);
+  return <TradeApp market={market} account={account} toast={toast} say={say} />;
+}
+
+function TradeApp({ market, account, toast, say }: { market: MarketState; account: AccountApi; toast: Toast | null; say: Notify }) {
+  const live = account.mode === "live";
   const [view, setView] = useState<View>("trade");
   const [bottom, setBottom] = useState<BottomTab>("positions");
   const [menu, setMenu] = useState<"asset" | "more" | null>(null);
@@ -65,22 +119,11 @@ export default function Home() {
   const [tenor, setTenor] = useState<Tenor>("1m");
   const [side, setSide] = useState<Side>("call");
   const [amount, setAmount] = useState("10");
-  const [toast, setToast] = useState<{ text: string; tone: "pos" | "neg" | "info" } | null>(null);
+  const [buying, setBuying] = useState(false);
   const [resetArmed, setResetArmed] = useState(false);
   const [equityOpen, setEquityOpen] = useState(false);
   const [follow, setFollow] = useState(true);
-  const settling = useRef<Set<string>>(new Set());
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const now = Date.now();
-
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => {
-    setAcct(loadAccount());
-    setMounted(true);
-  }, []);
-  useEffect(() => {
-    if (acct) saveAccount(acct);
-  }, [acct]);
 
   useEffect(() => {
     if (!menu) return;
@@ -94,12 +137,6 @@ export default function Home() {
     };
   }, [menu]);
 
-  const say = (text: string, tone: "pos" | "neg" | "info" = "info") => {
-    setToast({ text, tone });
-    if (toastTimer.current) clearTimeout(toastTimer.current);
-    toastTimer.current = setTimeout(() => setToast(null), 3500);
-  };
-
   const spot = market.price[asset];
   const sigma = pricingVol(market.implied[asset], market.realized[asset]);
   const expiry = nextExpiry(tenor, now);
@@ -109,111 +146,51 @@ export default function Home() {
 
   // Strikes are steps away from the at-the-money strike, so they follow the price.
   // Step = a round number near half an expected move (at least one tick).
-  const step = useMemo(() => {
-    if (!em) return TICK[asset];
-    const raw = em * 0.5;
-    const mag = 10 ** Math.floor(Math.log10(raw));
-    const n = raw / mag;
-    const nice = (n < 1.5 ? 1 : n < 3.5 ? 2.5 : n < 7 ? 5 : 10) * mag;
-    return Math.max(TICK[asset], Math.round(nice / TICK[asset]) * TICK[asset]);
-  }, [em, asset]);
-  const MAX_OFF = 4;
+  const step = useMemo(() => strikeStep(em, TICK[asset]), [em, asset]);
+  const MAX_OFF = MAX_STRIKE_STEPS;
   const [strikeOff, setStrikeOff] = useState(0);
   useEffect(() => setStrikeOff(0), [asset]);
   const atmStrike = spot ? Math.round(spot / step) * step : null;
   const strike = atmStrike !== null ? atmStrike + strikeOff * step : null;
 
-  // Settle expired positions with the sampled average, else Coinbase candles.
-  useEffect(() => {
-    if (!acct) return;
-    const due = acct.positions.filter((p) => p.status === "open" && p.expiry <= now && !settling.current.has(p.id));
-    for (const p of due) {
-      settling.current.add(p.id);
-      const from = p.expiry - TENORS[p.tenor].window;
-      const lv = twap(market.samples.current[p.asset], from, p.expiry);
-      const finish = (price: number) => {
-        const paid = payoutFor(p.side, price, p.strike, p.units, p.premium);
-        setAcct((a) => {
-          if (!a) return a;
-          const pos = a.positions.find((x) => x.id === p.id);
-          if (!pos || pos.status !== "open") return a;
-          return {
-            ...a,
-            balance: a.balance + paid,
-            pool: a.pool - paid,
-            positions: a.positions.map((x) => (x.id === p.id ? { ...x, status: "settled", settle: price, payout: paid } : x)),
-          };
-        });
-        const pnl = paid - p.premium;
-        say(`${p.asset} ${num(p.strike)} ${p.side} settled at ${num(price, p.asset === "BTC" ? 0 : 2)} · ${signed(pnl, (x) => usd(x))}`, pnl >= 0 ? "pos" : "neg");
-      };
-      if (lv.price && lv.coverage >= 0.6) finish(lv.price);
-      else
-        fetchSettlementFallback(p.asset, from, p.expiry).then((price) => {
-          if (price) finish(price);
-          else settling.current.delete(p.id);
-        });
-    }
-  }, [acct, now, market.samples]);
-
   const amt = Math.max(0, parseFloat(amount) || 0);
 
   const ticket = useMemo(() => {
-    if (!spot || strike === null || !acct) return null;
-    const perUnit = quote(side, spot, strike, sigma, T);
-    const units = perUnit > 0 ? amt / perUnit : 0;
+    if (!spot || strike === null || !account.ready) return null;
+    const { perUnit, units, maxPayout: mp } = priceTicket(side, spot, strike, sigma, expiry, now, amt);
     const breakeven = side === "call" ? strike + perUnit : strike - perUnit;
     const chance = probITM(side, spot, strike, sigma, T);
-    const mp = maxPayout(side, spot, strike, units, amt, em);
-    const openPos = acct.positions.filter((p) => p.status === "open");
-    const here = openPos.filter((p) => p.asset === asset && p.expiry === expiry);
+    const here = account.positions.filter((p) => p.status === "open" && p.asset === asset && p.expiry === expiry);
     const spentHere = here.reduce((s, p) => s + p.premium, 0);
-    const sideLiab = here.filter((p) => p.side === side).reduce((s, p) => s + p.maxPayout, 0);
-    const totalLiab = openPos.reduce((s, p) => s + p.maxPayout, 0);
+    // Pool limits count every open position against the pool (shared in live mode, your own in demo).
+    const poolHere = account.openAll.filter((p) => p.asset === asset && p.expiry === expiry && p.side === side);
+    const sideLiab = poolHere.reduce((s, p) => s + p.maxPayout, 0);
+    const totalLiab = account.openAll.reduce((s, p) => s + p.maxPayout, 0);
+    const balance = account.balance;
+    const poolBal = account.pool.balance;
     let block: string | null = null;
-    if (amt < RULES.minPremium) block = `Minimum ${usd(RULES.minPremium, 0)}`;
+    if (!account.signedIn) block = "Sign in with X to trade";
+    else if (amt < RULES.minPremium) block = `Minimum ${usd(RULES.minPremium, 0)}`;
     else if (amt > RULES.maxPremiumPerPosition) block = `Max ${usd(RULES.maxPremiumPerPosition, 0)} per trade`;
     else if (spentHere + amt > RULES.maxPremiumPerExpiry) block = `Max ${usd(RULES.maxPremiumPerExpiry, 0)} per expiry`;
-    else if (amt > acct.balance) block = "Not enough balance";
-    else if (sideLiab + mp > RULES.sidePoolShare * acct.pool || totalLiab + mp > RULES.totalPoolShare * acct.pool) block = "Pool limit reached";
-    const room = Math.max(0, Math.min(RULES.maxPremiumPerPosition, RULES.maxPremiumPerExpiry - spentHere, acct.balance));
+    else if (balance !== null && amt > balance) block = "Not enough balance";
+    else if (sideLiab + mp > RULES.sidePoolShare * poolBal || totalLiab + mp > RULES.totalPoolShare * poolBal) block = "Pool limit reached";
+    const room = Math.max(0, Math.min(RULES.maxPremiumPerPosition, RULES.maxPremiumPerExpiry - spentHere, balance ?? RULES.maxPremiumPerPosition));
     return { perUnit, units, breakeven, chance, mp, block, room };
-  }, [spot, strike, acct, side, sigma, T, amt, em, asset, expiry]);
+  }, [spot, strike, account, side, sigma, T, amt, asset, expiry, now]);
 
-  function buy() {
-    if (!acct || !ticket || ticket.block || strike === null || !spot) return;
-    const key = `${asset}-${expiry}`;
-    const day = new Date().toISOString().slice(0, 10);
-    const pd = acct.pointsDay.day === day ? acct.pointsDay : { day, count: 0 };
-    const earns = !acct.tradedExpiries.includes(key) && pd.count < 24;
-    const pos: Position = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      asset,
-      side,
-      strike,
-      tenor,
-      expiry,
-      premium: amt,
-      units: ticket.units,
-      maxPayout: ticket.mp,
-      boughtAt: Date.now(),
-      spotAtBuy: spot,
-      status: "open",
-    };
-    setAcct({
-      ...acct,
-      balance: acct.balance - amt,
-      pool: acct.pool + amt,
-      points: acct.points + (earns ? 10 : 0),
-      pointsDay: earns ? { day, count: pd.count + 1 } : pd,
-      tradedExpiries: earns ? [...acct.tradedExpiries.slice(-500), key] : acct.tradedExpiries,
-      positions: [pos, ...acct.positions].slice(0, 500),
-    });
-    say(`Bought ${asset} ${num(strike)} ${side} · ${usd(amt)}${earns ? " · +10 pts" : ""}`);
+  async function buy() {
+    if (!account.signedIn) return account.signIn?.();
+    if (!ticket || ticket.block || strike === null || !spot || buying) return;
+    setBuying(true);
+    const r = await account.buy({ asset, side, strike, tenor, expiry, premium: amt, perUnit: ticket.perUnit, spot, units: ticket.units, maxPayout: ticket.mp });
+    setBuying(false);
+    if (r.ok) say(`Bought ${asset} ${num(strike)} ${side} · ${usd(amt)}${r.pointsAwarded ? ` · +${r.pointsAwarded} pts` : ""}`);
+    else say(r.message, "neg");
   }
 
   // Derived numbers.
-  const positions = acct?.positions ?? [];
+  const positions = account.positions;
   const open = positions.filter((p) => p.status === "open");
   const settled = positions.filter((p) => p.status === "settled");
   const markValue = (p: Position) => {
@@ -227,26 +204,29 @@ export default function Home() {
   const openPnl = openValue - inOptions;
   const realizedPnl = settled.reduce((s, p) => s + (p.payout ?? 0) - p.premium, 0);
   const assetOpen = open.filter((p) => p.asset === asset);
-  const callOi = assetOpen.filter((p) => p.side === "call").reduce((s, p) => s + p.premium, 0);
-  const putOi = assetOpen.filter((p) => p.side === "put").reduce((s, p) => s + p.premium, 0);
-  const vol24 = positions.filter((p) => p.asset === asset && now - p.boughtAt < DAY_MS).reduce((s, p) => s + p.premium, 0);
+  // Live: global numbers for the asset. Demo: your own positions, as before.
+  const callOi = live ? (account.stats?.[asset].callOi ?? 0) : assetOpen.filter((p) => p.side === "call").reduce((s, p) => s + p.premium, 0);
+  const putOi = live ? (account.stats?.[asset].putOi ?? 0) : assetOpen.filter((p) => p.side === "put").reduce((s, p) => s + p.premium, 0);
+  const vol24 = live
+    ? (account.stats?.[asset].vol24 ?? 0)
+    : positions.filter((p) => p.asset === asset && now - p.boughtAt < DAY_MS).reduce((s, p) => s + p.premium, 0);
   const change = (a: Asset) => (market.price[a] && market.open24[a] ? market.price[a]! / market.open24[a]! - 1 : null);
-  const canTopUp = acct && acct.balance < TOP_UP_BELOW && now - acct.lastTopUp > WEEK_MS;
-  const premiumsIn = positions.reduce((s, p) => s + p.premium, 0);
-  const paidOut = settled.reduce((s, p) => s + (p.payout ?? 0), 0);
+  const canTopUp = account.canTopUp;
+  const premiumsIn = account.pool.premiumsIn;
+  const paidOut = account.pool.paidOut;
   const wins = settled.filter((p) => (p.payout ?? 0) > p.premium).length;
-  const tape = positions.slice(0, 16);
+  const tape: TapeItem[] = account.tape;
   const liveFeed = market.venues[asset] >= 2;
   const progress = roundProgress(tenor, expiry, now);
   const chartPositions = useMemo(
     () => open.filter((p) => p.asset === asset && p.expiry === expiry).map((p) => ({ id: p.id, side: p.side, strike: p.strike })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [acct?.positions, asset, expiry],
+    [account.positions, asset, expiry],
   );
 
   function resetAccount() {
     if (resetArmed) {
-      setAcct(freshAccount());
+      account.reset?.();
       setResetArmed(false);
       setMenu(null);
     } else {
@@ -323,13 +303,50 @@ export default function Home() {
     </table>
   );
 
-  const leaderboard = (
+  const board = account.leaderboard;
+  const leaderboard = !live ? (
     <div className="empty">
       <p>The leaderboard goes live with accounts.</p>
       <p className="muted">
         You: {settled.length} settled · {settled.length ? pct(wins / settled.length, 0) : "—"} win rate · {signed(realizedPnl, (x) => usd(x))}
       </p>
     </div>
+  ) : !board ? (
+    <p className="empty">Loading…</p>
+  ) : !board.length ? (
+    <div className="empty">
+      <p>No settled trades this week yet.</p>
+      <p className="muted">Ranked by realized P/L · resets Monday 00:00 UTC</p>
+    </div>
+  ) : (
+    <table className="tbl lb">
+      <thead>
+        <tr>
+          <th scope="col">#</th>
+          <th scope="col">Trader</th>
+          <th scope="col">P/L</th>
+          <th scope="col">Trades</th>
+          <th scope="col">Win rate</th>
+          <th scope="col">Best</th>
+          <th scope="col">Points</th>
+        </tr>
+      </thead>
+      <tbody>
+        {board.map((r, i) => (
+          <tr key={r.userId} className={`${r.isMe ? "me" : ""} ${i > 0 && r.rank > 50 && board[i - 1].rank <= 50 ? "gap" : ""}`}>
+            <td>{r.rank}</td>
+            <td>
+              <Who trader={{ id: r.userId, handle: r.handle, avatar: r.avatar }} />
+            </td>
+            <td className={r.pnl >= 0 ? "pos" : "neg"}>{signed(r.pnl, (x) => usd(x))}</td>
+            <td>{num(r.trades)}</td>
+            <td>{pct(r.winRate, 0)}</td>
+            <td>{r.bestMultiple.toFixed(1)}×</td>
+            <td>{num(r.points)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
   );
 
   const statusList = (
@@ -363,9 +380,6 @@ export default function Home() {
     </dl>
   );
 
-  // Everything here depends on the clock and local storage, so render only in the browser.
-  if (!mounted) return <div className="app" />;
-
   return (
     <div className="app">
       <nav className="nav" aria-label="Main">
@@ -387,23 +401,33 @@ export default function Home() {
               <div className="menu">
                 <button onClick={() => { setBottom("status"); setView("trade"); setMenu(null); }}>Pricing &amp; status</button>
                 <button onClick={() => { setView("house"); setMenu(null); }}>How the pool works</button>
-                <button onClick={resetAccount}>{resetArmed ? "Click again to reset" : "Reset paper account"}</button>
+                {!live && <button onClick={resetAccount}>{resetArmed ? "Click again to reset" : "Reset paper account"}</button>}
+                {live && account.signedIn && <button onClick={() => { setMenu(null); account.signOut?.(); }}>Sign out</button>}
               </div>
             )}
           </div>
         </div>
         <div className="nav-right">
           <span className="badge">Paper</span>
-          <span className="navstat">
-            <span className="muted">Balance</span> {acct ? usd(acct.balance) : "—"}
-          </span>
-          <span className="navstat">
-            <span className="muted">Points</span> {acct ? num(acct.points) : "—"}
-          </span>
-          {canTopUp && (
-            <button className="tab" onClick={() => acct && setAcct({ ...acct, balance: acct.balance + START_BALANCE, lastTopUp: Date.now() })}>
-              Top up
+          {live && account.ready && !account.signedIn ? (
+            <button className="signin" onClick={() => account.signIn?.()}>
+              Sign in with X
             </button>
+          ) : (
+            <>
+              <span className="navstat">
+                <span className="muted">Balance</span> {account.balance !== null ? usd(account.balance) : "—"}
+              </span>
+              <span className="navstat">
+                <span className="muted">Points</span> {account.points !== null ? num(account.points) : "—"}
+              </span>
+              {canTopUp && (
+                <button className="tab" onClick={() => account.topUp()}>
+                  Top up
+                </button>
+              )}
+              {live && account.me && <Who trader={account.me} size={22} />}
+            </>
           )}
         </div>
       </nav>
@@ -483,13 +507,13 @@ export default function Home() {
               <button className="eq-head" onClick={() => setEquityOpen(!equityOpen)} aria-expanded={equityOpen}>
                 <Chevron dir={equityOpen ? "up" : "down"} /> Account equity
                 <span className="grow" />
-                <span>{acct ? usd(acct.balance + openValue) : "—"}</span>
+                <span>{account.balance !== null ? usd(account.balance + openValue) : "—"}</span>
               </button>
               {equityOpen && (
                 <dl className="kv">
                   <div>
                     <dt>Available to trade</dt>
-                    <dd>{acct ? usd(acct.balance) : "—"}</dd>
+                    <dd>{account.balance !== null ? usd(account.balance) : "—"}</dd>
                   </div>
                   <div>
                     <dt>In options</dt>
@@ -574,8 +598,8 @@ export default function Home() {
               </div>
             </dl>
 
-            <button className={`buy ${side}`} onClick={buy} disabled={!ticket || !!ticket.block}>
-              {!ticket ? "Waiting for price…" : ticket.block ?? `Buy ${side === "call" ? "Call" : "Put"}`}
+            <button className={`buy ${side}`} onClick={buy} disabled={!ticket || buying || (!!ticket.block && account.signedIn)}>
+              {!ticket ? "Waiting for price…" : buying ? "Buying…" : ticket.block ?? `Buy ${side === "call" ? "Call" : "Put"}`}
             </button>
 
             <div className="grow" />
@@ -600,10 +624,20 @@ export default function Home() {
                   <div className="tape-track">
                     {[...tape, ...tape].map((p, i) => {
                       const pnl = (p.payout ?? 0) - p.premium;
+                      const paid = p.payout ?? 0;
                       return (
                         <span key={`${p.id}-${i}`} className="chip" aria-hidden={i >= tape.length}>
+                          {live && <Who trader={p.trader} />}
                           <Coin asset={p.asset} small />
-                          {p.status === "open" ? (
+                          {live && p.status === "settled" ? (
+                            paid > p.premium ? (
+                              <span className="pos">
+                                +{compact(paid)} · {(paid / p.premium).toFixed(1)}×
+                              </span>
+                            ) : (
+                              <span className="neg">{signed(pnl, compact)}</span>
+                            )
+                          ) : p.status === "open" ? (
                             <span className={p.side}>
                               {p.side === "call" ? "▲" : "▼"} {compact(p.premium)}
                             </span>
@@ -638,7 +672,7 @@ export default function Home() {
           <div className="cards">
             <div className="card">
               <span className="lbl">Equity</span>
-              <strong>{acct ? usd(acct.balance + openValue) : "—"}</strong>
+              <strong>{account.balance !== null ? usd(account.balance + openValue) : "—"}</strong>
             </div>
             <div className="card">
               <span className="lbl">Realized P/L</span>
@@ -650,7 +684,7 @@ export default function Home() {
             </div>
             <div className="card">
               <span className="lbl">Points</span>
-              <strong>{num(acct?.points ?? 0)}</strong>
+              <strong>{num(account.points ?? 0)}</strong>
             </div>
           </div>
           <h2>Open</h2>
@@ -665,12 +699,12 @@ export default function Home() {
           <h1>House pool</h1>
           <p className="lead">
             Every premium goes into its round&apos;s escrow. At expiry, winners are paid from that escrow first, then from the pool; anything left over
-            goes to the pool. In paper mode the pool is simulated and starts at {usd(START_POOL, 0)}.
+            goes to the pool. {live ? "Everyone trades against this one shared pool" : "In paper mode the pool is simulated"}, which started at {usd(START_POOL, 0)}.
           </p>
           <div className="cards">
             <div className="card">
               <span className="lbl">Pool balance</span>
-              <strong>{acct ? usd(acct.pool, 0) : "—"}</strong>
+              <strong>{usd(account.pool.balance, 0)}</strong>
             </div>
             <div className="card">
               <span className="lbl">Premiums in</span>
@@ -682,7 +716,7 @@ export default function Home() {
             </div>
             <div className="card">
               <span className="lbl">Pool P/L</span>
-              <strong className={acct && acct.pool - START_POOL >= 0 ? "pos" : "neg"}>{acct ? signed(acct.pool - START_POOL, (x) => usd(x, 0)) : "—"}</strong>
+              <strong className={account.pool.balance - START_POOL >= 0 ? "pos" : "neg"}>{signed(account.pool.balance - START_POOL, (x) => usd(x, 0))}</strong>
             </div>
           </div>
           <h2>Rules</h2>
