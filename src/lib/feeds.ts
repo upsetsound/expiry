@@ -26,6 +26,7 @@ export type MarketState = {
 export const isDemo = () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("demo");
 
 const KEEP_MS = 2 * 60 * 60_000;
+const WARMUP_MS = 5_000;
 
 function openSocket(url: string, onOpen: (ws: WebSocket) => void, onMsg: (data: unknown) => void, pingText?: string) {
   let ws: WebSocket | null = null;
@@ -293,6 +294,11 @@ export function useMarket(): MarketState {
     }
 
     // Sample 4x a second: combine venues, append to the series, roll 1-minute closes, publish.
+    // Warm-up: Coinbase (USD) trades ~0.15-0.2% below the USDT venues and usually reports first, so a median of
+    // one or two venues right after load sits visibly low and then jumps. Hold the price until 3 venues have
+    // reported, or WARMUP_MS has passed (so one dead venue can't blank the chart).
+    const started = Date.now();
+    const warm = { BTC: demo, ETH: demo } as Record<Asset, boolean>;
     const tick = setInterval(() => {
       const now = Date.now();
       const minute = Math.floor(now / 60_000);
@@ -300,6 +306,10 @@ export function useMarket(): MarketState {
       const venues = { BTC: 0, ETH: 0 } as Record<Asset, number>;
       for (const a of ASSETS) {
         const c = combine(book.current[a], now);
+        if (!warm[a]) {
+          if (c.n >= 3 || now - started > WARMUP_MS) warm[a] = true;
+          else continue;
+        }
         price[a] = c.price;
         venues[a] = demo && c.price ? 4 : c.n;
         if (!c.price) continue;

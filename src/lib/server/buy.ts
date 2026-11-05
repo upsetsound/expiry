@@ -84,7 +84,8 @@ export function prepareBuy(input: BuyInput, market: { spot: number; sigma: numbe
   if (!onTick || Math.abs(strike - spot) > (MAX_STRIKE_STEPS + 1) * step) return fail(400, "bad_strike", "Strike is out of range", quote);
 
   if (!(t.perUnit > 0) || !(t.units > 0)) return fail(409, "no_value", "This option has no value left", quote);
-  if (Math.abs(t.perUnit / input.perUnit - 1) > QUOTE_TOLERANCE) return fail(409, "price_moved", "Price moved, try again", quote);
+  // One-sided slippage: reject only if the buyer would pay more than shown + 2%. Cheaper fills at the server price.
+  if (t.perUnit / input.perUnit - 1 > QUOTE_TOLERANCE) return fail(409, "price_moved", "Price moved, try again", quote);
 
   return {
     ok: true,

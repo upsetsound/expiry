@@ -138,7 +138,11 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   }, [menu]);
 
   const spot = market.price[asset];
-  const sigma = pricingVol(market.implied[asset], market.realized[asset]);
+  // Live mode prices with the server's vol so the quote shown matches /api/buy; demo uses the browser's own.
+  const sigmaFor = (a: Asset) => account.vol?.[a].sigma ?? pricingVol(market.implied[a], market.realized[a]);
+  const impliedFor = (a: Asset) => (account.vol ? account.vol[a].implied : market.implied[a]);
+  const realizedFor = (a: Asset) => (account.vol ? account.vol[a].realized : market.realized[a]);
+  const sigma = sigmaFor(asset);
   const expiry = nextExpiry(tenor, now);
   const T = yearsUntil(expiry, now);
   const em = spot ? expectedMove(spot, sigma, T) : 0;
@@ -196,7 +200,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   const markValue = (p: Position) => {
     const s = market.price[p.asset];
     if (!s) return null;
-    const sg = pricingVol(market.implied[p.asset], market.realized[p.asset]);
+    const sg = sigmaFor(p.asset);
     return Math.min(bsPrice(p.side, s, p.strike, sg, yearsUntil(p.expiry, now)) * p.units, RULES.payoutCap * p.premium);
   };
   const inOptions = open.reduce((s, p) => s + p.premium, 0);
@@ -360,7 +364,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
       <div>
         <dt>Pricing vol · {asset}</dt>
         <dd>
-          {pct(sigma, 0)} — max of DVOL {market.implied[asset] ? pct(market.implied[asset]!, 0) : "n/a"}, 1.25 × realized {pct(market.realized[asset], 0)}, 35%
+          {pct(sigma, 0)} — max of DVOL {impliedFor(asset) ? pct(impliedFor(asset)!, 0) : "n/a"}, 1.25 × realized {pct(realizedFor(asset), 0)}, 35%
         </dd>
       </div>
       <div>

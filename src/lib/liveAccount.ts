@@ -2,7 +2,7 @@
 // Supabase-backed account: X sign-in, the shared pool, everyone's trades over Realtime, server-side buys/settlement.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
-import { settledToast, type AccountApi, type AssetStats, type LeaderRow, type Notify, type PoolState, type TapeItem, type Trader } from "./account";
+import { settledToast, type AccountApi, type AssetStats, type LeaderRow, type Notify, type PoolState, type ServerVol, type TapeItem, type Trader } from "./account";
 import type { Asset } from "./feeds";
 import { supabaseBrowser } from "./supabase/client";
 import { START_POOL, TOP_UP_BELOW, WEEK_MS, type Position } from "./store";
@@ -66,6 +66,7 @@ export function useLiveAccount(notify: Notify): AccountApi {
   const [pool, setPool] = useState<PoolState>({ balance: START_POOL, premiumsIn: 0, paidOut: 0 });
   const [stats, setStats] = useState<Record<Asset, AssetStats> | null>(null);
   const [board, setBoard] = useState<LeaderRow[] | null>(null);
+  const [vol, setVol] = useState<Record<Asset, ServerVol> | null>(null);
   const userRef = useRef<string | null>(null);
   const mineStatus = useRef<Map<string, Position["status"]>>(new Map()); // my positions' last known status
   const toasted = useRef<Set<string>>(new Set());
@@ -212,6 +213,18 @@ export function useLiveAccount(notify: Notify): AccountApi {
     for (const p of mine) if (!mineStatus.current.has(p.id) || p.status === "settled") mineStatus.current.set(p.id, p.status);
   }, [mine]);
 
+  // The server's pricing vol (what /api/buy uses), refreshed a little faster than its 30s cache.
+  useEffect(() => {
+    const load = () =>
+      fetch("/api/market", { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((v) => v?.BTC?.sigma && v?.ETH?.sigma && setVol(v))
+        .catch(() => {});
+    load();
+    const id = setInterval(load, 15_000);
+    return () => clearInterval(id);
+  }, []);
+
   // Fetch handles/avatars for anyone on the tape or leaderboard we haven't seen.
   useEffect(() => {
     loadTraders(recent.map((p) => p.userId));
@@ -253,6 +266,7 @@ export function useLiveAccount(notify: Notify): AccountApi {
     pool,
     stats,
     leaderboard: board,
+    vol,
     async buy(r) {
       if (!signedIn) return { ok: false, message: "Sign in with X to trade" };
       const res = await fetch("/api/buy", {

@@ -13,6 +13,7 @@ export type Trader = { id: string; handle: string | null; avatar: string | null 
 export type TapeItem = Position & { trader?: Trader };
 export type PoolState = { balance: number; premiumsIn: number; paidOut: number };
 export type AssetStats = { vol24: number; callOi: number; putOi: number };
+export type ServerVol = { sigma: number; implied: number | null; realized: number };
 export type LeaderRow = {
   rank: number;
   userId: string;
@@ -55,6 +56,7 @@ export type AccountApi = {
   pool: PoolState;
   stats: Record<Asset, AssetStats> | null; // global (live only); demo computes from its own positions
   leaderboard: LeaderRow[] | null; // live only
+  vol: Record<Asset, ServerVol> | null; // live: the server's pricing vol, so shown quotes match /api/buy
   buy: (r: BuyRequest) => Promise<BuyResult>;
   topUp: () => Promise<void>;
   reset?: () => void;
@@ -132,6 +134,7 @@ export function useLocalAccount(market: MarketState, notify: Notify): AccountApi
     },
     stats: null,
     leaderboard: null,
+    vol: null,
     async buy(r) {
       if (!acct) return { ok: false, message: "Loading…" };
       const key = `${r.asset}-${r.expiry}`;

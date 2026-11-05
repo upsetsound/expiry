@@ -49,12 +49,18 @@ describe("client and server quotes match", () => {
 
 describe("stale quotes", () => {
   const t = clientTicket("call", "5m", 0, 50);
-  it(`accepts a quote within ${QUOTE_TOLERANCE * 100}%`, () => {
-    expect(prepareBuy(input(t, "call", "5m", 50, t.perUnit * 1.019), { spot: SPOT, sigma: SIGMA }, NOW).ok).toBe(true);
-    expect(prepareBuy(input(t, "call", "5m", 50, t.perUnit * 0.981), { spot: SPOT, sigma: SIGMA }, NOW).ok).toBe(true);
+  it(`accepts a server price up to ${QUOTE_TOLERANCE * 100}% above the shown quote`, () => {
+    expect(prepareBuy(input(t, "call", "5m", 50, t.perUnit / 1.019), { spot: SPOT, sigma: SIGMA }, NOW).ok).toBe(true);
   });
-  it("rejects a quote more than 2% off and returns the new quote", () => {
-    for (const k of [1.021, 0.979, 1.5]) {
+  it("accepts any server price below the shown quote and fills at the server price", () => {
+    for (const k of [1.019, 1.021, 1.5]) {
+      const r = prepareBuy(input(t, "call", "5m", 50, t.perUnit * k), { spot: SPOT, sigma: SIGMA }, NOW);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.rpc.p_units).toBe(50 / t.perUnit);
+    }
+  });
+  it("rejects a server price more than 2% above the shown quote and returns the new quote", () => {
+    for (const k of [1 / 1.021, 0.9, 0.5]) {
       const r = prepareBuy(input(t, "call", "5m", 50, t.perUnit * k), { spot: SPOT, sigma: SIGMA }, NOW);
       expect(r.ok).toBe(false);
       if (r.ok) return;
@@ -63,10 +69,10 @@ describe("stale quotes", () => {
       expect(r.quote?.perUnit).toBe(t.perUnit);
     }
   });
-  it("rejects when the market moved under the shown quote", () => {
-    const r = prepareBuy(input(t, "call", "5m", 50), { spot: SPOT * 1.002, sigma: SIGMA }, NOW);
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toBe("price_moved");
+  it("rejects when the market moved against the buyer, accepts when it moved for them", () => {
+    const up = prepareBuy(input(t, "call", "5m", 50), { spot: SPOT * 1.002, sigma: SIGMA }, NOW);
+    expect(!up.ok && up.error).toBe("price_moved");
+    expect(prepareBuy(input(t, "call", "5m", 50), { spot: SPOT * 0.998, sigma: SIGMA }, NOW).ok).toBe(true);
   });
 });
 
