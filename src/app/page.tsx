@@ -740,13 +740,13 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
                       const pnl = (p.payout ?? 0) - p.premium;
                       const paid = p.payout ?? 0;
                       return (
-                        <span key={`${p.id}-${i}`} className="chip" aria-hidden={i >= tape.length}>
+                        <span key={`${p.id}-${i}`} className={`chip ${live && p.status === "settled" && paid >= 5 * p.premium ? "big" : ""}`} aria-hidden={i >= tape.length}>
                           {live && <Who trader={p.trader} />}
                           <Coin asset={p.asset} small />
                           {live && p.status === "settled" ? (
                             paid > p.premium ? (
                               <span className="pos">
-                                +{compact(paid)} · {(paid / p.premium).toFixed(1)}×
+                                +{compact(paid)} · {mult(paid / p.premium)}
                               </span>
                             ) : (
                               <span className="neg">{signed(pnl, compact)}</span>
