@@ -2,7 +2,7 @@
 // Supabase-backed account: X sign-in, the shared pool, everyone's trades over Realtime, server-side buys/settlement.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
-import { settledToast, type AccountApi, type AssetStats, type LeaderRow, type Notify, type PoolState, type ServerVol, type TapeItem, type Trader } from "./account";
+import { type AccountApi, type AssetStats, type LeaderRow, type Notify, type PoolState, type ServerVol, type TapeItem, type Trader } from "./account";
 import type { Asset } from "./feeds";
 import { supabaseBrowser } from "./supabase/client";
 import { START_POOL, TOP_UP_BELOW, WEEK_MS, type Position } from "./store";
@@ -68,8 +68,6 @@ export function useLiveAccount(notify: Notify): AccountApi {
   const [board, setBoard] = useState<LeaderRow[] | null>(null);
   const [vol, setVol] = useState<Record<Asset, ServerVol> | null>(null);
   const userRef = useRef<string | null>(null);
-  const mineStatus = useRef<Map<string, Position["status"]>>(new Map()); // my positions' last known status
-  const toasted = useRef<Set<string>>(new Set());
   const notifyRef = useRef(notify);
   notifyRef.current = notify;
 
@@ -182,11 +180,6 @@ export function useLiveAccount(notify: Notify): AccountApi {
       setRecent((list) => upsert(list, p).sort((a, b) => b.eventAt - a.eventAt).slice(0, TAPE_LEN));
       setOpen((list) => (p.status === "open" ? upsert(list, p) : list.filter((x) => x.id !== p.id)));
       if (p.userId === userRef.current) {
-        if (p.status === "settled" && mineStatus.current.get(p.id) === "open" && !toasted.current.has(p.id)) {
-          toasted.current.add(p.id);
-          settledToast(p, p.settle ?? 0, p.payout ?? 0, notifyRef.current);
-        }
-        mineStatus.current.set(p.id, p.status);
         setMine((list) => upsert(list, p));
         if (p.status === "settled") {
           loadMe();
@@ -208,10 +201,6 @@ export function useLiveAccount(notify: Notify): AccountApi {
       sb.removeChannel(channel);
     };
   }, [sb, loadMe, loadBoard, loadStats]);
-
-  useEffect(() => {
-    for (const p of mine) if (!mineStatus.current.has(p.id) || p.status === "settled") mineStatus.current.set(p.id, p.status);
-  }, [mine]);
 
   // The server's pricing vol (what /api/buy uses), refreshed a little faster than its 30s cache.
   useEffect(() => {

@@ -200,3 +200,8 @@ h2 { font-size: 13px; margin: 28px 0 8px; font-weight: 600; color: var(--muted);
 .ladder button:hover { color: var(--text); }
 .ladder button.on.call { color: var(--mint); border-color: rgba(143, 245, 210, 0.45); background: rgba(143, 245, 210, 0.06); }
 .ladder button.on.put { color: var(--orange); border-color: rgba(255, 178, 122, 0.45); background: rgba(255, 178, 122, 0.06); }
+
+/* End-of-round tension */
+.settles { display: flex; justify-content: space-between; align-items: baseline; color: var(--orange); font-size: 12.5px; font-weight: 500; }
+.settles strong { font-size: 14px; font-weight: 600; }
+.progress.urgent span { background: var(--orange); opacity: 1; }

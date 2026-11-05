@@ -2,7 +2,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Chart from "./Chart";
 import { ASSETS, TICK, isDemo, useMarket, type Asset, type MarketState } from "@/lib/feeds";
-import { useLocalAccount, type AccountApi, type Notify, type Position, type TapeItem, type Trader } from "@/lib/account";
+import { settledToast, useLocalAccount, type AccountApi, type Notify, type Position, type TapeItem, type Trader } from "@/lib/account";
+import { useRoundResults, type RoundResult } from "@/lib/useRoundResults";
 import { useLiveAccount } from "@/lib/liveAccount";
 import {
   MAX_STRIKE_STEPS,
@@ -102,7 +103,7 @@ export default function Home() {
 function DemoApp() {
   const market = useMarket();
   const { toast, say } = useToast();
-  const account = useLocalAccount(market, say);
+  const account = useLocalAccount(market);
   return <TradeApp market={market} account={account} toast={toast} say={say} />;
 }
 
@@ -239,11 +240,31 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   const tape: TapeItem[] = account.tape;
   const liveFeed = market.venues[asset] >= 2;
   const progress = roundProgress(tenor, expiry, now);
-  const chartPositions = useMemo(
-    () => open.filter((p) => p.asset === asset && p.expiry === expiry).map((p) => ({ id: p.id, side: p.side, strike: p.strike })),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [account.positions, asset, expiry],
-  );
+
+  // Round results (open -> settled, grouped per round): settlement price flash on the chart, toasts.
+  const [settled$, setSettled$] = useState<{ asset: Asset; tenor: Tenor; expiry: number; price: number; until: number } | null>(null);
+  useRoundResults(account.positions, (r: RoundResult) => {
+    setSettled$({ asset: r.asset, tenor: r.tenor, expiry: r.expiry, price: r.settle, until: Date.now() + 2_000 });
+    if (r.positions.length === 1) settledToast(r.positions[0], r.settle, r.payout, say);
+    else say(`${r.asset} ${TENORS[r.tenor].label} round settled at ${num(r.settle, r.asset === "BTC" ? 0 : 2)} · ${signed(r.pnl, (x) => usd(x))}`, r.pnl >= 0 ? "pos" : "neg");
+  });
+
+  // Closing round: while I hold positions in this asset/tenor whose sales have closed, the chart keeps showing
+  // that round (and for the 2s settlement flash after it settles); the round on sale is drawn faintly.
+  const closing = open.filter((p) => p.asset === asset && p.tenor === tenor && p.expiry < expiry);
+  const justSettled = settled$ && settled$.asset === asset && settled$.tenor === tenor && now < settled$.until ? settled$ : null;
+  const focusExpiry = closing.length ? Math.min(...closing.map((p) => p.expiry)) : (justSettled?.expiry ?? null);
+  const chartExpiry = focusExpiry ?? expiry;
+  const settlesIn = closing.length && focusExpiry !== null ? focusExpiry - now : null;
+  const urgent = settlesIn !== null && settlesIn > 0 && settlesIn <= 10_000;
+  const chartPositions = open
+    .filter((p) => p.asset === asset && p.expiry === chartExpiry)
+    .map((p) => ({
+      id: p.id,
+      side: p.side,
+      strike: p.strike,
+      label: spot ? `${p.side === "call" ? "C" : "P"} ${num(p.strike, asset === "BTC" ? 0 : 1)} · ${mult(liveMultiple(p, spot, sigma, now))} now` : undefined,
+    }));
 
   function resetAccount() {
     if (resetArmed) {
@@ -510,7 +531,10 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
                 history={market.history}
                 spot={spot}
                 sigma={sigma}
-                expiry={expiry}
+                expiry={chartExpiry}
+                nextExpiry={focusExpiry !== null ? expiry : null}
+                urgent={urgent}
+                flash={justSettled ? { price: justSettled.price, until: justSettled.until } : null}
                 settleWindow={TENORS[tenor].window}
                 side={side}
                 strike={strike}
@@ -571,7 +595,12 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
                   </button>
                 ))}
               </div>
-              <div className="progress" aria-hidden="true">
+              {urgent && settlesIn !== null && (
+                <div className="settles" role="status">
+                  Your round settles in <strong className="mono">{formatCountdown(settlesIn)}</strong>
+                </div>
+              )}
+              <div className={`progress ${urgent ? "urgent" : ""}`} aria-hidden="true">
                 <span style={{ width: `${progress * 100}%` }} />
               </div>
             </div>

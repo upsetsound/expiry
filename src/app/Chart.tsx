@@ -21,7 +21,7 @@ const MIN_SPAN = 20_000;
 const MAX_SPAN = 5 * 60 * 60_000;
 const TIME_STEPS = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200].map((s) => s * 1000);
 
-export type ChartPosition = { id: string; side: Side; strike: number };
+export type ChartPosition = { id: string; side: Side; strike: number; label?: string };
 
 type Props = {
   asset: Asset;
@@ -34,6 +34,9 @@ type Props = {
   side: Side;
   strike: number | null;
   positions: ChartPosition[];
+  nextExpiry?: number | null; // drawn faintly while the chart follows a closing round
+  urgent?: boolean; // last 10s of a round I hold: the expiry line and settlement band pulse
+  flash?: { price: number; until: number } | null; // settlement price tag on the axis
   decimals: number;
   defaultSpan: number;
   follow: boolean;
@@ -117,6 +120,8 @@ export default function Chart(props: Props) {
     const ro = new ResizeObserver(resize);
     ro.observe(box);
     resize();
+
+    const motion = window.matchMedia("(prefers-reduced-motion: reduce)");
 
     // Live view scrolls at a constant pace: "now" sits 78% of the way across.
     const liveRight = (now: number) => now + view.current.span * 0.22;
@@ -218,7 +223,8 @@ export default function Chart(props: Props) {
       ctx.font = "500 11px 'Inter Tight', system-ui";
 
       // Price-axis labels are skipped where a tag will sit.
-      const tagYs = [last.p, ...(p.strike !== null ? [p.strike] : []), ...p.positions.map((x) => x.strike)].map(Y);
+      const flashing = p.flash && now < p.flash.until ? [p.flash.price] : [];
+      const tagYs = [last.p, ...flashing, ...(p.strike !== null ? [p.strike] : []), ...p.positions.map((x) => x.strike)].map(Y);
       const underTag = (py: number) => tagYs.some((ty) => Math.abs(ty - py) < 17);
 
       // Grid + price axis.
@@ -262,9 +268,22 @@ export default function Chart(props: Props) {
 
       // Expiry: settlement band, expected-move cone, expiry line.
       const ex = X(p.expiry);
+      // Final seconds: band and line turn orange and breathe (steady orange with reduced motion).
+      const urgent = !!p.urgent && p.expiry > now;
+      const beat = urgent && !motion.matches ? 0.5 + 0.5 * Math.sin((now / 1000) * Math.PI * 2) : 1;
       if (p.expiry > x0 && p.expiry - p.settleWindow < x1) {
-        ctx.fillStyle = "rgba(143,245,210,0.06)";
+        ctx.fillStyle = urgent ? `rgba(255,178,122,${0.06 + 0.1 * beat})` : "rgba(143,245,210,0.06)";
         ctx.fillRect(X(p.expiry - p.settleWindow), M.top, ex - X(p.expiry - p.settleWindow), plotH);
+      }
+      if (p.nextExpiry && p.nextExpiry >= x0 && p.nextExpiry <= x1) {
+        const nx = Math.round(X(p.nextExpiry)) + 0.5;
+        ctx.setLineDash([3, 5]);
+        ctx.strokeStyle = "rgba(234,244,241,0.14)";
+        ctx.beginPath();
+        ctx.moveTo(nx, M.top);
+        ctx.lineTo(nx, M.top + plotH);
+        ctx.stroke();
+        ctx.setLineDash([]);
       }
       if (p.expiry > now && X(now) < M.left + plotW) {
         const steps = 30;
@@ -293,11 +312,13 @@ export default function Chart(props: Props) {
         ctx.setLineDash([]);
       }
       if (p.expiry >= x0 && p.expiry <= x1) {
-        ctx.strokeStyle = "rgba(234,244,241,0.45)";
+        ctx.strokeStyle = urgent ? `rgba(255,178,122,${0.5 + 0.45 * beat})` : "rgba(234,244,241,0.45)";
+        ctx.lineWidth = urgent ? 1.5 : 1;
         ctx.beginPath();
         ctx.moveTo(Math.round(ex) + 0.5, M.top);
         ctx.lineTo(Math.round(ex) + 0.5, M.top + plotH);
         ctx.stroke();
+        ctx.lineWidth = 1;
       }
 
       // Positions on this expiry and the selected strike.
@@ -371,6 +392,22 @@ export default function Chart(props: Props) {
       ctx.arc(dotX, dotY, 3.5, 0, Math.PI * 2);
       ctx.fill();
 
+      // Position labels on their lines, just left of the price axis: "C 101,520 · 3.1× now".
+      ctx.font = "600 11px 'Inter Tight', system-ui";
+      ctx.textAlign = "right";
+      for (const pos of p.positions) {
+        if (!pos.label || pos.strike < v.y0 || pos.strike > v.y1) continue;
+        const py = Math.round(Y(pos.strike));
+        const tw = ctx.measureText(pos.label).width + 10;
+        const lx = M.left + plotW - 6;
+        const ly = py < M.top + 20 ? py + 4 : py - 18;
+        roundRect(ctx, lx - tw, ly, tw, 16, 3);
+        ctx.fillStyle = "rgba(11,21,19,0.85)";
+        ctx.fill();
+        ctx.fillStyle = pos.side === "call" ? C.mint : C.orange;
+        ctx.fillText(pos.label, lx - 5, ly + 12);
+      }
+
       // Crosshair.
       const hover = pointer.current && !drag.current ? pointer.current : null;
       if (hover && hover.x < M.left + plotW && hover.y > M.top && hover.y < M.top + plotH) {
@@ -410,6 +447,12 @@ export default function Chart(props: Props) {
       }
       if (p.strike !== null && p.strike > v.y0 && p.strike < v.y1) tag(Y(p.strike), fmt(p.strike), sideColor, sideColor, true);
       tag(dotY, fmt(last.p), C.mint, C.bg);
+      if (p.flash && now < p.flash.until && p.flash.price > v.y0 && p.flash.price < v.y1) {
+        const fade = motion.matches ? 1 : Math.min(1, (p.flash.until - now) / 400);
+        ctx.globalAlpha = fade;
+        tag(Y(p.flash.price), fmt(p.flash.price), C.text, C.bg);
+        ctx.globalAlpha = 1;
+      }
       if (hover && hover.x < M.left + plotW && hover.y > M.top && hover.y < M.top + plotH) {
         const hp = v.y0 + (1 - (hover.y - M.top) / plotH) * (v.y1 - v.y0);
         tag(hover.y, fmt(hp), C.tagBg, C.text);

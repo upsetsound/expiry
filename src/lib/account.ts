@@ -73,7 +73,8 @@ export function settledToast(p: Position, price: number, paid: number, notify: N
 }
 
 // ?demo: the original single-player paper account, unchanged in behavior.
-export function useLocalAccount(market: MarketState, notify: Notify): AccountApi {
+// Settlement feedback (toast, win card, sounds) is handled by the page via useRoundResults.
+export function useLocalAccount(market: MarketState): AccountApi {
   const [acct, setAcct] = useState<Account | null>(null);
   const settling = useRef<Set<string>>(new Set());
   const now = Date.now();
@@ -104,7 +105,6 @@ export function useLocalAccount(market: MarketState, notify: Notify): AccountApi
             positions: a.positions.map((x) => (x.id === p.id ? { ...x, status: "settled", settle: price, payout: paid } : x)),
           };
         });
-        settledToast(p, price, paid, notify);
       };
       if (lv.price && lv.coverage >= 0.6) finish(lv.price);
       else
@@ -113,7 +113,7 @@ export function useLocalAccount(market: MarketState, notify: Notify): AccountApi
           else settling.current.delete(p.id);
         });
     }
-  }, [acct, now, market.samples, notify]);
+  }, [acct, now, market.samples]);
 
   const positions = acct?.positions ?? [];
   return {
