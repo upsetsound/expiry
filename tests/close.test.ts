@@ -45,3 +45,50 @@ describe("close deadline", () => {
     expect(canClose(expiry, "1h", expiry - 299_000)).toBe(false);
   });
 });
+
+describe("prepareClose", async () => {
+  const { prepareClose, parseClose } = await import("@/lib/server/close");
+  const NOW = Date.UTC(2026, 10, 7, 12, 30, 0);
+  const pos = {
+    id: "7b4c2f1e-9a3d-4e8b-b1c2-0d9e8f7a6b5c",
+    user_id: "u1",
+    asset: "BTC" as const,
+    side: "call" as const,
+    strike: 76_200,
+    tenor: "1h" as const,
+    expiry: new Date(NOW + 20 * 60_000).toISOString(),
+    premium: 10,
+    units: 0.2,
+    payout_cap: 100,
+    status: "open",
+  };
+  const mkt = { spot: 76_000, sigma: 0.5 };
+  const fair = bid(pos.side, mkt.spot, pos.strike, mkt.sigma, (20 * 60_000) / YEAR, pos.units, pos.premium, 100);
+
+  it("closes at the server's bid when within 2% of, or better than, the shown bid", () => {
+    for (const shown of [fair, fair * 1.019, fair * 0.5]) {
+      const r = prepareClose(pos, shown, mkt, "u1", NOW);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.rpc.p_proceeds).toBeCloseTo(fair, 2);
+    }
+  });
+  it("rejects a bid more than 2% worse than shown and returns the new bid", () => {
+    const r = prepareClose(pos, fair * 1.03, mkt, "u1", NOW);
+    expect(r.ok).toBe(false);
+    if (!r.ok) {
+      expect(r.error).toBe("price_moved");
+      expect(r.bid).toBeCloseTo(fair, 2);
+    }
+  });
+  it("refuses other people's, closed, settled, and in-window closes", () => {
+    expect(prepareClose(pos, fair, mkt, "someone-else", NOW)).toMatchObject({ ok: false, error: "not_found" });
+    expect(prepareClose({ ...pos, status: "closed" }, fair, mkt, "u1", NOW)).toMatchObject({ ok: false, error: "not_open" });
+    expect(prepareClose({ ...pos, status: "settled" }, fair, mkt, "u1", NOW)).toMatchObject({ ok: false, error: "not_open" });
+    expect(prepareClose(pos, fair, mkt, "u1", Date.parse(pos.expiry) - 299_000)).toMatchObject({ ok: false, error: "settling" });
+  });
+  it("parses input strictly", () => {
+    expect(parseClose({ positionId: pos.id, bid: 1.5 })).toEqual({ positionId: pos.id, bid: 1.5 });
+    expect(parseClose({ positionId: "nope", bid: 1 })).toBeNull();
+    expect(parseClose({ positionId: pos.id, bid: -1 })).toBeNull();
+  });
+});
