@@ -10,6 +10,7 @@ import { sounds, useSound } from "@/lib/sound";
 import { useLiveAccount } from "@/lib/liveAccount";
 import {
   RULES,
+  bid as bidFor,
   liveMultiple,
   priceTicket,
   pricingVol,
@@ -21,7 +22,7 @@ import {
   yearsUntil,
   type Side,
 } from "@/lib/pricing";
-import { TENORS, TENOR_LIST, formatClock, formatCountdown, nextExpiry, roundProgress, type Tenor } from "@/lib/schedule";
+import { TENORS, TENOR_LIST, canClose, formatClock, formatCountdown, nextExpiry, roundProgress, type Tenor } from "@/lib/schedule";
 import { START_POOL } from "@/lib/store";
 
 const DAY_MS = 24 * 60 * 60_000;
@@ -264,6 +265,79 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
     return { perUnit, units, breakeven, chance, multiple, mp, block, room };
   }, [spot, strike, account, side, sigma, T, amt, asset, expiry, now]);
 
+  // Closing early: sell back to the pool at its bid (fair value minus the edge) until the settlement window.
+  const [closingId, setClosingId] = useState<string | null>(null);
+  const [retryBid, setRetryBid] = useState<Record<string, number>>({});
+  const liveBid = (p: Position) => {
+    const s = market.price[p.asset];
+    if (!s) return null;
+    return Math.round(bidFor(p.side, s, p.strike, sigmaFor(p.asset), yearsUntil(p.expiry, now), p.units, p.premium, p.payoutCap ?? 20) * 100) / 100;
+  };
+  const dropRetry = (id: string) =>
+    setRetryBid((m) => {
+      const next = { ...m };
+      delete next[id];
+      return next;
+    });
+  async function closePos(p: Position, shown: number) {
+    setClosingId(p.id);
+    const r = await account.close(p, shown);
+    setClosingId(null);
+    if (!r.ok) {
+      if (r.bid !== undefined) {
+        const retry = r.bid;
+        setRetryBid((m) => ({ ...m, [p.id]: retry }));
+        setTimeout(() => dropRetry(p.id), 6_000);
+      }
+      say(r.message, "neg");
+      return;
+    }
+    dropRetry(p.id);
+    const pnl = r.proceeds - p.premium;
+    const m = p.premium > 0 ? r.proceeds / p.premium : 0;
+    if (pnl > 0) sounds.win();
+    else sounds.loss();
+    if (m >= 2) {
+      setWin({
+        key: `close-${p.id}`,
+        asset: p.asset,
+        tenor: p.tenor,
+        expiry: p.expiry,
+        settle: r.position.closePrice ?? 0,
+        premium: p.premium,
+        payout: r.proceeds,
+        pnl,
+        multiple: m,
+        positions: [r.position],
+        closed: true,
+      });
+    }
+    say(`Closed ${p.asset} ${num(p.strike)} ${p.side} · ${usd(r.proceeds)} · ${signed(pnl, (x) => usd(x))}`, pnl >= 0 ? "pos" : "neg");
+  }
+  const closeCell = (p: Position) => {
+    if (!canClose(p.expiry, p.tenor, now)) {
+      return (
+        <button className="close-btn" disabled>
+          Settling…
+        </button>
+      );
+    }
+    const b = liveBid(p);
+    if (b === null) return "—";
+    const retry = retryBid[p.id];
+    const pnl = b - p.premium;
+    return (
+      <span className="close-cell">
+        <button className={`close-btn ${retry !== undefined ? "retry" : ""}`} disabled={closingId === p.id} onClick={() => closePos(p, retry ?? b)}>
+          {closingId === p.id ? "Closing…" : retry !== undefined ? `Price moved: close at ${usd(retry)}?` : `Close · ${usd(b)}`}
+        </button>
+        <span className={`small ${pnl >= 0 ? "pos" : "neg"}`}>
+          {signed(pnl, (x) => usd(x))} · {mult(p.premium > 0 ? b / p.premium : 0)}
+        </span>
+      </span>
+    );
+  };
+
   async function buy() {
     if (!account.signedIn) return account.signIn?.();
     if (!ticket || ticket.block || strike === null || !spot || buying) return;
@@ -278,7 +352,9 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   // Derived numbers.
   const positions = account.positions;
   const open = positions.filter((p) => p.status === "open");
-  const settled = positions.filter((p) => p.status === "settled");
+  // Realized: settled at expiry (payout) or closed early (close proceeds).
+  const settled = positions.filter((p) => p.status !== "open");
+  const realized = (p: Position) => p.payout ?? p.closeProceeds ?? 0;
   const markValue = (p: Position) => {
     const s = market.price[p.asset];
     if (!s) return null;
@@ -287,7 +363,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   const inOptions = open.reduce((s, p) => s + p.premium, 0);
   const openValue = open.reduce((s, p) => s + (markValue(p) ?? 0), 0);
   const openPnl = openValue - inOptions;
-  const realizedPnl = settled.reduce((s, p) => s + (p.payout ?? 0) - p.premium, 0);
+  const realizedPnl = settled.reduce((s, p) => s + realized(p) - p.premium, 0);
   const assetOpen = open.filter((p) => p.asset === asset);
   // Live: global numbers for the asset. Demo: your own positions, as before.
   const callOi = live ? (account.stats?.[asset].callOi ?? 0) : assetOpen.filter((p) => p.side === "call").reduce((s, p) => s + p.premium, 0);
@@ -299,7 +375,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   const canTopUp = account.canTopUp;
   const premiumsIn = account.pool.premiumsIn;
   const paidOut = account.pool.paidOut;
-  const wins = settled.filter((p) => (p.payout ?? 0) > p.premium).length;
+  const wins = settled.filter((p) => realized(p) > p.premium).length;
   const tape: TapeItem[] = account.tape;
   const liveFeed = market.venues[asset] >= 2;
   const progress = roundProgress(tenor, expiry, now);
@@ -380,6 +456,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
           <th scope="col">Value</th>
           <th scope="col">P/L</th>
           <th scope="col">Breakeven</th>
+          <th scope="col">Close</th>
         </tr>
       </thead>
       <tbody>
@@ -394,6 +471,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
               <td>{v !== null ? usd(v) : "—"}</td>
               <td className={v !== null && v - p.premium >= 0 ? "pos" : "neg"}>{v !== null ? signed(v - p.premium, (x) => usd(x)) : "—"}</td>
               <td>{num(p.side === "call" ? p.strike + per : p.strike - per, p.asset === "BTC" ? 0 : 1)}</td>
+              <td>{closeCell(p)}</td>
             </tr>
           );
         })}
@@ -415,14 +493,14 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
       </thead>
       <tbody>
         {settled.map((p) => {
-          const pnl = (p.payout ?? 0) - p.premium;
+          const pnl = realized(p) - p.premium;
           return (
             <tr key={p.id}>
               <td>{optLabel(p)}</td>
               <td>{formatClock(p.expiry)}</td>
-              <td>{num(p.settle ?? 0, p.asset === "BTC" ? 0 : 2)}</td>
+              <td>{p.status === "closed" ? `Closed · ${num(p.closePrice ?? 0, p.asset === "BTC" ? 0 : 2)}` : num(p.settle ?? 0, p.asset === "BTC" ? 0 : 2)}</td>
               <td>{usd(p.premium)}</td>
-              <td>{usd(p.payout ?? 0)}</td>
+              <td>{usd(realized(p))}</td>
               <td className={pnl >= 0 ? "pos" : "neg"}>{signed(pnl, (x) => usd(x))}</td>
             </tr>
           );
@@ -828,13 +906,13 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
                 {tape.length > 0 && (
                   <div className="tape-track">
                     {[...tape, ...tape].map((p, i) => {
-                      const pnl = (p.payout ?? 0) - p.premium;
-                      const paid = p.payout ?? 0;
+                      const paid = p.payout ?? p.closeProceeds ?? 0;
+                      const pnl = paid - p.premium;
                       return (
-                        <span key={`${p.id}-${i}`} className={`chip ${live && p.status === "settled" && paid >= 5 * p.premium ? "big" : ""}`} aria-hidden={i >= tape.length}>
+                        <span key={`${p.id}-${i}`} className={`chip ${live && p.status !== "open" && paid >= 5 * p.premium ? "big" : ""}`} aria-hidden={i >= tape.length}>
                           {live && <Who trader={p.trader} />}
                           <Coin asset={p.asset} small />
-                          {live && p.status === "settled" ? (
+                          {live && p.status !== "open" ? (
                             paid > p.premium ? (
                               <span className="pos">
                                 +{compact(paid)} · {mult(paid / p.premium)}

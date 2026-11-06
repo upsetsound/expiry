@@ -18,6 +18,7 @@ export type RoundResult = {
   pnl: number;
   multiple: number; // payout / premium for the whole round
   positions: Position[];
+  closed?: boolean; // a position closed early (win card says "Closed")
 };
 
 const GATHER_MS = 1_500;

@@ -4,7 +4,8 @@
 //   useLiveAccount  — Supabase: X sign-in, shared pool, server-side buys and settlement (src/lib/liveAccount.ts)
 import { useEffect, useRef, useState } from "react";
 import { fetchSettlementFallback, twap, type Asset, type MarketState } from "./feeds";
-import { DEFAULT_LIMITS, payout as payoutFor, type Limits, type Side } from "./pricing";
+import { DEFAULT_LIMITS, bid as bidFor, payout as payoutFor, pricingVol, yearsUntil, type Limits, type Side } from "./pricing";
+import { canClose } from "./schedule";
 import { TENORS, type Tenor } from "./schedule";
 import { START_BALANCE, START_POOL, TOP_UP_BELOW, WEEK_MS, freshAccount, loadAccount, saveAccount, type Account, type Position } from "./store";
 
@@ -43,6 +44,7 @@ export type BuyRequest = {
   units: number;
   maxPayout: number;
 };
+export type CloseResult = { ok: true; proceeds: number; position: Position } | { ok: false; message: string; bid?: number };
 export type BuyResult = { ok: true; pointsAwarded: number; multiple?: number } | { ok: false; message: string };
 
 export type AccountApi = {
@@ -64,6 +66,7 @@ export type AccountApi = {
   limits: Limits; // per-trade and per-round premium limits and the payout cap (settings row; code defaults in demo)
   buy: (r: BuyRequest) => Promise<BuyResult>;
   topUp: () => Promise<void>;
+  close: (p: Position, shownBid: number) => Promise<CloseResult>;
   reset?: () => void;
   signIn?: () => void;
   signOut?: () => void;
@@ -173,6 +176,23 @@ export function useLocalAccount(market: MarketState): AccountApi {
         positions: [pos, ...acct.positions].slice(0, 500),
       });
       return { ok: true, pointsAwarded: earns ? 10 : 0 };
+    },
+    async close(p, shownBid) {
+      // Demo: the same bid rule as the server, on the browser's prices.
+      const spot = market.price[p.asset];
+      if (!acct || !spot) return { ok: false, message: "Waiting for price…" };
+      const now = Date.now();
+      if (!canClose(p.expiry, p.tenor, now)) return { ok: false, message: "Settling… too late to close" };
+      const sigma = pricingVol(market.implied[p.asset], market.realized[p.asset]);
+      const b = Math.round(bidFor(p.side, spot, p.strike, sigma, yearsUntil(p.expiry, now), p.units, p.premium, p.payoutCap ?? 20) * 100) / 100;
+      if (shownBid > 0 && b < shownBid * 0.98) return { ok: false, message: "Price moved: close at $" + b.toFixed(2) + "?", bid: b };
+      const closed: Position = { ...p, status: "closed", closePrice: spot, closeProceeds: b, closedAt: now };
+      setAcct((a) =>
+        a && a.positions.some((x) => x.id === p.id && x.status === "open")
+          ? { ...a, balance: a.balance + b, pool: a.pool - b, positions: a.positions.map((x) => (x.id === p.id ? closed : x)) }
+          : a,
+      );
+      return { ok: true, proceeds: b, position: closed };
     },
     async topUp() {
       if (acct) setAcct({ ...acct, balance: acct.balance + START_BALANCE, lastTopUp: Date.now() });

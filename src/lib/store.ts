@@ -17,9 +17,12 @@ export type Position = {
   payoutCap?: number; // the payout cap when bought (older demo positions: 20)
   boughtAt: number;
   spotAtBuy: number;
-  status: "open" | "settled";
+  status: "open" | "settled" | "closed";
   settle?: number;
   payout?: number;
+  closePrice?: number; // closed early: spot at the close
+  closeProceeds?: number; // closed early: what the pool paid
+  closedAt?: number;
 };
 
 export type Account = {

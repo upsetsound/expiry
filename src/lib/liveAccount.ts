@@ -21,15 +21,18 @@ type Row = {
   max_payout: number | string;
   payout_cap: number | string;
   spot_at_buy: number;
-  status: "open" | "settled";
+  status: "open" | "settled" | "closed";
   settle_price: number | null;
   payout: number | string | null;
   created_at: string;
   settled_at: string | null;
+  close_price: number | null;
+  close_proceeds: number | string | null;
+  closed_at: string | null;
 };
 type Me = { id: string; x_handle: string | null; avatar_url: string | null; balance: number; points: number; last_top_up: string };
 
-const COLS = "id,user_id,asset,side,strike,tenor,expiry,premium,units,max_payout,payout_cap,spot_at_buy,status,settle_price,payout,created_at,settled_at";
+const COLS = "id,user_id,asset,side,strike,tenor,expiry,premium,units,max_payout,payout_cap,spot_at_buy,status,settle_price,payout,created_at,settled_at,close_price,close_proceeds,closed_at";
 const TAPE_LEN = 30;
 
 const toPosition = (r: Row): Position & { userId: string; eventAt: number } => ({
@@ -49,7 +52,10 @@ const toPosition = (r: Row): Position & { userId: string; eventAt: number } => (
   status: r.status,
   settle: r.settle_price ?? undefined,
   payout: r.payout === null ? undefined : Number(r.payout),
-  eventAt: Date.parse(r.settled_at ?? r.created_at),
+  closePrice: r.close_price ?? undefined,
+  closeProceeds: r.close_proceeds === null || r.close_proceeds === undefined ? undefined : Number(r.close_proceeds),
+  closedAt: r.closed_at ? Date.parse(r.closed_at) : undefined,
+  eventAt: Date.parse(r.settled_at ?? r.closed_at ?? r.created_at),
 });
 type LivePos = ReturnType<typeof toPosition>;
 
@@ -292,6 +298,20 @@ export function useLiveAccount(notify: Notify): AccountApi {
       setOpen((list) => upsert(list, p));
       setMe((m) => (m ? { ...m, balance: Number(body.balance), points: Number(body.points) } : m));
       return { ok: true, pointsAwarded: Number(body.points_awarded ?? 0), multiple: Number(body.quote?.multiple) || undefined };
+    },
+    async close(p, shownBid) {
+      const res = await fetch("/api/close", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ positionId: p.id, bid: shownBid }),
+      }).catch(() => null);
+      const body = await res?.json().catch(() => null);
+      if (!res || !res.ok || !body?.ok) return { ok: false, message: body?.message ?? "Couldn't reach the server. Try again.", bid: body?.bid };
+      const closed = toPosition(body.position as Row);
+      setMine((list) => upsert(list, closed));
+      setOpen((list) => list.filter((x) => x.id !== closed.id));
+      setMe((m) => (m ? { ...m, balance: Number(body.balance) } : m));
+      return { ok: true, proceeds: Number(body.bid), position: closed };
     },
     async topUp() {
       const res = await fetch("/api/topup", { method: "POST" });

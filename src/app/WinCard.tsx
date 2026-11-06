@@ -39,7 +39,7 @@ export default function WinCard({ result, onClose }: { result: RoundResult; onCl
   return (
     <div className="wincard-wrap">
       <div className="wincard" role="dialog" aria-label="You won" onClick={onClose} onMouseEnter={stop} onMouseLeave={start}>
-        <div className="win-pnl">+{usd(result.payout)}</div>
+        <div className="win-pnl">{result.closed ? "Closed " : ""}+{usd(result.payout)}</div>
         <div className="win-mult">{formatMultiple(result.multiple)}</div>
         <div className="win-meta">
           <span>{option}</span>
