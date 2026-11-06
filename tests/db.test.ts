@@ -290,6 +290,40 @@ describe.skipIf(!local)("database (local Supabase)", () => {
     });
   });
 
+  describe("closing early", () => {
+    it("closes once, credits the seller from the pool, and never also settles", async () => {
+      const r = await buy(users[8], { p_premium: 20, p_expiry: futureExpiry(), p_window_ms: 5000 });
+      const id = r.data.position.id;
+      const close = () => admin.rpc("close_position", { p_user: users[8], p_position: id, p_price: 76_000, p_proceeds: 15.5 });
+      const [a, b] = await Promise.all([close(), close()]); // concurrent double close
+      expect([a.data?.ok, b.data?.ok].filter(Boolean).length).toBe(1);
+      expect([a.data?.error, b.data?.error]).toContain("not_open");
+      const [p] = await q<{ balance: string }>("select balance from public.profiles where id = $1", [users[8]]);
+      expect(Number(p.balance)).toBeCloseTo(10_000 - 20 + 15.5, 2);
+      const [pool] = await q<{ balance: string; paid_out: string }>("select balance, paid_out from public.pool");
+      expect(Number(pool.balance)).toBeCloseTo(250_000 + 20 - 15.5, 2);
+      expect(Number(pool.paid_out)).toBeCloseTo(15.5, 2);
+      // Force it past expiry and settle the round: the closed position is skipped.
+      await q("update public.positions set expiry = now() - interval '2 minutes' where id = $1", [id]);
+      const [row] = await q<{ expiry: Date; tenor: string }>("select expiry, tenor from public.positions where id = $1", [id]);
+      const st = await admin.rpc("settle_round", { p_asset: "BTC", p_tenor: row.tenor, p_expiry: row.expiry.toISOString(), p_price: 90_000, p_window_ms: 5000, p_source: "test" });
+      expect(st.data?.settled).toBe(0);
+      const [after] = await q<{ status: string; payout: string | null }>("select status, payout from public.positions where id = $1", [id]);
+      expect(after).toEqual({ status: "closed", payout: null });
+    });
+
+    it("refuses someone else's position, a settled one, and closes inside the settlement window", async () => {
+      const r = await buy(users[9], { p_premium: 10, p_expiry: futureExpiry(), p_window_ms: 5000 });
+      const id = r.data.position.id;
+      expect((await admin.rpc("close_position", { p_user: users[8], p_position: id, p_price: 1, p_proceeds: 1 })).data?.error).toBe("not_found");
+      await q("update public.positions set expiry = now() + interval '3 seconds' where id = $1", [id]);
+      expect((await admin.rpc("close_position", { p_user: users[9], p_position: id, p_price: 1, p_proceeds: 1 })).data?.error).toBe("settling");
+      await q("update public.positions set status = 'settled', payout = 0 where id = $1", [id]);
+      expect((await admin.rpc("close_position", { p_user: users[9], p_position: id, p_price: 1, p_proceeds: 1 })).data?.error).toBe("not_open");
+      expect((await anon.rpc("close_position", { p_user: users[9], p_position: id, p_price: 1, p_proceeds: 1 })).error).not.toBeNull();
+    });
+  });
+
   describe("leaderboard and top-up", () => {
     it("ranks this week's realized P/L", async () => {
       await q(
