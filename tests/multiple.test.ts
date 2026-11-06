@@ -1,7 +1,7 @@
 // Payout multiples shown on the ticket and the chart.
 import { describe, expect, it } from "vitest";
 import { RULES, bsPrice, liveMultiple, priceTicket, strikeStep, winMultiple } from "@/lib/pricing";
-import { shareText } from "@/lib/share";
+import { shareText, shareUrl, winLink } from "@/lib/share";
 
 const SPOT = 76_000;
 const SIGMA = 0.5;
@@ -69,5 +69,15 @@ describe("share text", () => {
     expect(shareText(r, "", "https://expiry.example")).toBe("Just hit 8.4× on a 1-minute BTC call 📈 expiry.example");
     expect(shareText(r, "@expiryapp", "")).toBe("Just hit 8.4× on a 1-minute BTC call on @expiryapp 📈");
     expect(shareText(r, "", "")).toBe("Just hit 8.4× on a 1-minute BTC call 📈");
+  });
+  it("links live wins to /w/<best position id>", () => {
+    const id = "7b4c2f1e-9a3d-4e8b-b1c2-0d9e8f7a6b5c";
+    const two = { ...r, positions: [{ ...r.positions[0], id: "aaaaaaaa-0000-4000-8000-000000000000", payout: 5 }, { ...r.positions[0], id, payout: 84 }] };
+    expect(winLink(two, "https://expiry.example/")).toBe(`https://expiry.example/w/${id}`);
+    expect(shareText(two, "expiryapp", winLink(two, "https://expiry.example")!)).toBe(`Just hit 8.4× on a 1-minute BTC call on @expiryapp 📈 https://expiry.example/w/${id}`);
+    expect(decodeURIComponent(shareUrl(two, "https://expiry.example").split("text=")[1])).toContain(`https://expiry.example/w/${id}`);
+  });
+  it("keeps demo wins (local ids) on the plain site link", () => {
+    expect(winLink(r, "https://expiry.example")).toBeNull();
   });
 });

@@ -245,3 +245,8 @@ h2 { font-size: 13px; margin: 28px 0 8px; font-weight: 600; color: var(--muted);
 .not-eligible { margin-left: 8px; }
 .rules ol { display: flex; flex-direction: column; gap: 10px; padding-left: 20px; max-width: 680px; line-height: 1.6; }
 .rules a { color: var(--text); }
+
+/* Public win page */
+.win-page { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 16px; }
+.wincard.static { cursor: default; animation: none; }
+.win-actions a.win-share { display: inline-flex; align-items: center; height: 34px; padding: 0 18px; border-radius: 8px; font-size: 13px; font-weight: 600; text-decoration: none; }

@@ -1,10 +1,16 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { TAGLINE, siteUrl } from "@/lib/site";
+
+const description = `${TAGLINE}. Pick your multiple, pay a premium, settle in a minute. Paper money.`;
 
 export const metadata: Metadata = {
-  title: "Expiry — paper mode",
-  description: "BTC and ETH options that expire in an hour. Paper trading.",
+  metadataBase: new URL(siteUrl()),
+  title: "Expiry",
+  description,
   icons: { icon: "/favicon.svg" },
+  openGraph: { title: "Expiry", description, siteName: "Expiry", type: "website" },
+  twitter: { card: "summary_large_image", title: "Expiry", description, ...(process.env.NEXT_PUBLIC_X_HANDLE ? { site: `@${process.env.NEXT_PUBLIC_X_HANDLE}` } : {}) },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
