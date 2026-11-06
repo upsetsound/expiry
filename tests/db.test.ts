@@ -1,6 +1,7 @@
 // Database rules, run against the LOCAL Supabase stack only (`npx supabase start`). Never point this at a hosted
 // project: it truncates tables. Skipped when the local stack isn't running.
 import { execSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import pg from "pg";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -15,9 +16,29 @@ function localStack(): Local | null {
     return null;
   }
 }
-const local = localStack();
+// Staging (expiry-staging) when .env.test.local is filled in; otherwise the local Docker stack.
+function envFile(path: string): Record<string, string> {
+  if (!existsSync(path)) return {};
+  const out: Record<string, string> = {};
+  for (const line of readFileSync(path, "utf8").split("\n")) {
+    const m = line.match(/^([A-Z_]+)=(\S*)$/);
+    if (m && m[2]) out[m[1]] = m[2];
+  }
+  return out;
+}
+function stagingStack(): Local | null {
+  const t = envFile(".env.test.local");
+  if (!t.TEST_SUPABASE_URL || !t.TEST_DB_URL || !t.TEST_SUPABASE_SERVICE_ROLE_KEY || !t.TEST_SUPABASE_ANON_KEY) return null;
+  // These tests truncate tables: never let them near production.
+  const prodRef = envFile(".env.local").SUPABASE_PROJECT_REF;
+  if (prodRef && (t.TEST_SUPABASE_URL.includes(prodRef) || t.TEST_DB_URL.includes(prodRef))) {
+    throw new Error("Refusing to run database tests against the production project (" + prodRef + ")");
+  }
+  return { API_URL: t.TEST_SUPABASE_URL, DB_URL: t.TEST_DB_URL, ANON_KEY: t.TEST_SUPABASE_ANON_KEY, SERVICE_ROLE_KEY: t.TEST_SUPABASE_SERVICE_ROLE_KEY };
+}
+const local = stagingStack() ?? localStack();
 
-describe.skipIf(!local)("database (local Supabase)", () => {
+describe.skipIf(!local)("database (staging or local Supabase)", () => {
   let sql: pg.Client;
   let admin: SupabaseClient;
   let anon: SupabaseClient;
@@ -43,7 +64,8 @@ describe.skipIf(!local)("database (local Supabase)", () => {
     });
 
   beforeAll(async () => {
-    sql = new pg.Client({ connectionString: local!.DB_URL });
+    const remote = !local!.DB_URL.includes("127.0.0.1");
+    sql = new pg.Client({ connectionString: local!.DB_URL, ...(remote ? { ssl: { rejectUnauthorized: false } } : {}) });
     await sql.connect();
     admin = createClient(local!.API_URL, local!.SERVICE_ROLE_KEY, { auth: { persistSession: false } });
     anon = createClient(local!.API_URL, local!.ANON_KEY, { auth: { persistSession: false } });
