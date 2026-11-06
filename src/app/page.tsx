@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Chart from "./Chart";
 import WinCard from "./WinCard";
+import ShareModal, { type ShareTarget } from "./ShareModal";
 import { ASSETS, TICK, isDemo, useMarket, type Asset, type MarketState } from "@/lib/feeds";
 import { settledToast, useLocalAccount, type AccountApi, type Notify, type Position, type TapeItem, type Trader } from "@/lib/account";
 import { useRoundResults, type RoundResult } from "@/lib/useRoundResults";
@@ -383,6 +384,13 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   // Round results (open -> settled, grouped per round): settlement price flash on the chart, toasts.
   const [settled$, setSettled$] = useState<{ asset: Asset; tenor: Tenor; expiry: number; price: number; until: number } | null>(null);
   const [win, setWin] = useState<RoundResult | null>(null);
+  const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
+  const shareDay = () => {
+    if (!account.me?.handle) return;
+    const d = new Date();
+    const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    setShareTarget({ kind: "day", handle: account.me.handle, date, text: "My day on Expiry 📈" });
+  };
   const sound = useSound();
   const intro = useIntro();
   const theme = useTheme();
@@ -734,7 +742,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
                 follow={follow}
                 onFollowChange={setFollow}
               />
-              {win && <WinCard result={win} onClose={() => setWin(null)} />}
+              {win && <WinCard result={win} me={account.me} onClose={() => setWin(null)} onShare={live ? setShareTarget : undefined} />}
             </div>
           </section>
 
@@ -936,11 +944,26 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
             </div>
             <div className="bbody">
               {bottom === "positions" && (open.length ? positionsTable : <p className="empty">No open positions.</p>)}
-              {bottom === "history" && (settled.length ? historyTable : <p className="empty">No settled trades yet.</p>)}
+              {bottom === "history" &&
+                (settled.length ? (
+                  <>
+                    {live && account.me?.handle && (
+                      <div className="history-share">
+                        <button className="win-again" onClick={shareDay}>
+                          Share my day
+                        </button>
+                      </div>
+                    )}
+                    {historyTable}
+                  </>
+                ) : (
+                  <p className="empty">No settled trades yet.</p>
+                ))}
               {bottom === "leaderboard" && leaderboard}
               {bottom === "status" && statusList}
             </div>
           </section>
+          {shareTarget && <ShareModal target={shareTarget} onClose={() => setShareTarget(null)} />}
           {toast && (
             <div className={`toast ${toast.tone}`} role="status">
               {toast.text}
