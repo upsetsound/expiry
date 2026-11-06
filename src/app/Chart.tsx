@@ -382,11 +382,13 @@ export default function Chart(props: Props) {
       ctx.lineTo(M.left + plotW, Math.round(dotY) + 0.5);
       ctx.stroke();
       ctx.setLineDash([]);
-      const pulse = (now % 1600) / 1600;
-      ctx.fillStyle = `rgba(143,245,210,${0.35 * (1 - pulse)})`;
-      ctx.beginPath();
-      ctx.arc(dotX, dotY, 3 + pulse * 9, 0, Math.PI * 2);
-      ctx.fill();
+      if (!motion.matches) {
+        const pulse = (now % 1600) / 1600;
+        ctx.fillStyle = `rgba(143,245,210,${0.35 * (1 - pulse)})`;
+        ctx.beginPath();
+        ctx.arc(dotX, dotY, 3 + pulse * 9, 0, Math.PI * 2);
+        ctx.fill();
+      }
       ctx.fillStyle = C.mint;
       ctx.beginPath();
       ctx.arc(dotX, dotY, 3.5, 0, Math.PI * 2);
