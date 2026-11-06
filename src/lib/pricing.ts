@@ -146,3 +146,35 @@ export function liveMultiple(
   const value = Math.min(bsPrice(pos.side, spot, pos.strike, sigma, yearsUntil(pos.expiry, nowMs)) * pos.units, cap * pos.premium);
   return pos.premium > 0 ? value / pos.premium : 0;
 }
+
+// Leverage slider: the win multiples a buyer can pick.
+export const LEVERAGE_STOPS = [2, 3, 5, 10, 20, 50, 100];
+export type StrikeOption = { strike: number; multiple: number; chance: number };
+
+// Out-of-the-money strikes for one side, from the at-the-money strike outward on the asset's tick, out to
+// MAX_EM_OUT expected moves, with their win multiple and chance of finishing in the money.
+export function strikeOptions(side: Side, spot: number, sigma: number, T: number, tick: number, cap = RULES.payoutCap): StrikeOption[] {
+  const em = expectedMove(spot, sigma, T);
+  const atm = Math.round(spot / tick) * tick;
+  const dir = side === "call" ? 1 : -1;
+  const out: StrikeOption[] = [];
+  for (let k = 0; k < 2000; k++) {
+    const strike = atm + dir * k * tick;
+    if (strike <= 0 || (k > 0 && Math.abs(strike - spot) > MAX_EM_OUT * em)) break;
+    out.push({ strike, multiple: winMultiple(side, spot, strike, sigma, T, cap), chance: probITM(side, spot, strike, sigma, T) });
+  }
+  return out;
+}
+
+// The strike whose win multiple is closest to the target (compared on a log scale, so 10x sits between 5x and
+// 20x). reachable = some strike gets within 10% of the target; max = the highest multiple on offer.
+export function strikeForMultiple(options: StrikeOption[], target: number): { option: StrikeOption | null; reachable: boolean; max: number } {
+  if (!options.length) return { option: null, reachable: false, max: 0 };
+  let best = options[0];
+  let max = 0;
+  for (const o of options) {
+    if (o.multiple > max) max = o.multiple;
+    if (Math.abs(Math.log(o.multiple / target)) < Math.abs(Math.log(best.multiple / target))) best = o;
+  }
+  return { option: best, reachable: max >= target * 0.9, max };
+}

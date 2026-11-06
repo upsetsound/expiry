@@ -98,3 +98,37 @@ describe("formatMultiple", () => {
     expect([1.84, 4.2, 9.94, 9.97, 10, 14.4, 20].map(formatMultiple)).toEqual(["1.8×", "4.2×", "9.9×", "10×", "10×", "14×", "20×"]);
   });
 });
+
+describe("leverage slider strike search", async () => {
+  const { LEVERAGE_STOPS, strikeOptions, strikeForMultiple } = await import("@/lib/pricing");
+  const T1m = 45_000 / (365 * 24 * 60 * 60_000);
+  const T1h = 40 * 60_000 / (365 * 24 * 60 * 60_000);
+
+  it("offers only out-of-the-money strikes, outward from at the money", () => {
+    const calls = strikeOptions("call", SPOT, SIGMA, T1h, 10);
+    const puts = strikeOptions("put", SPOT, SIGMA, T1h, 10);
+    expect(calls[0].strike).toBe(SPOT);
+    expect(calls.every((o, i) => i === 0 || o.strike > calls[i - 1].strike)).toBe(true);
+    expect(puts.every((o, i) => i === 0 || o.strike < puts[i - 1].strike)).toBe(true);
+  });
+
+  it("lands each reachable stop close to its multiple, on distinct strikes", () => {
+    // 1h rounds have fine strike spacing relative to the expected move; 1m rounds are coarser near expiry.
+    for (const [T, tol] of [[T1m, 0.3], [T1h, 0.15]]) {
+      const opts = strikeOptions("call", SPOT, SIGMA, T, 10);
+      const picks = LEVERAGE_STOPS.map((s) => ({ s, ...strikeForMultiple(opts, s) })).filter((p) => p.reachable);
+      for (const p of picks) expect(Math.abs(p.option!.multiple / p.s - 1)).toBeLessThan(tol);
+      expect(new Set(picks.map((p) => p.option!.strike)).size).toBe(picks.length);
+    }
+  });
+
+  it("never offers more than the cap, and reports the max when a stop can't be reached", () => {
+    const opts = strikeOptions("put", SPOT, SIGMA, T1h, 10);
+    expect(Math.max(...opts.map((o) => o.multiple))).toBeLessThanOrEqual(100);
+    // A blink before expiry the expected move is under one price tick: only at the money is on offer.
+    const tiny = strikeOptions("call", SPOT, SIGMA, 50 / (365 * 24 * 60 * 60_000), 10);
+    const r = strikeForMultiple(tiny, 100);
+    expect(r.reachable).toBe(false);
+    expect(r.option!.multiple).toBe(r.max);
+  });
+});

@@ -9,14 +9,14 @@ import { formatMultiple } from "@/lib/share";
 import { sounds, useSound } from "@/lib/sound";
 import { useLiveAccount } from "@/lib/liveAccount";
 import {
-  MAX_STRIKE_STEPS,
   RULES,
-  expectedMove,
   liveMultiple,
   priceTicket,
   pricingVol,
   probITM,
-  strikeStep,
+  LEVERAGE_STOPS,
+  strikeForMultiple,
+  strikeOptions,
   winMultiple,
   yearsUntil,
   type Side,
@@ -223,21 +223,19 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   const sigma = sigmaFor(asset);
   const expiry = nextExpiry(tenor, now);
   const T = yearsUntil(expiry, now);
-  const em = spot ? expectedMove(spot, sigma, T) : 0;
   const dec = asset === "BTC" ? 0 : 2;
 
-  // Strikes are steps away from the at-the-money strike, so they follow the price.
-  // Step = a round number near half an expected move (at least one tick).
-  const step = useMemo(() => strikeStep(em, TICK[asset]), [em, asset]);
-  // Only at-the-money and out-of-the-money strikes: 0..+4 steps up for calls, 0..-4 down for puts.
-  const [strikeOff, setStrikeOff] = useState(0);
-  useEffect(() => setStrikeOff(0), [asset]);
-  const pickSide = (s: Side) => {
-    if (s !== side) setStrikeOff((o) => -o); // keep the same distance from the money on the other side
-    setSide(s);
-  };
-  const atmStrike = spot ? Math.round(spot / step) * step : null;
-  const strike = atmStrike !== null ? atmStrike + strikeOff * step : null;
+  // Leverage: the buyer picks a target win multiple; the strike is the out-of-the-money one whose multiple is
+  // closest, recomputed every tick. The chosen stop is kept across round rollovers and price moves.
+  const [stopIdx, setStopIdx] = useState(0);
+  const pickSide = (s: Side) => setSide(s);
+  const leverage = useMemo(() => {
+    if (!spot) return null;
+    const options = strikeOptions(side, spot, sigma, T, TICK[asset], account.limits.payoutCap);
+    const reach = LEVERAGE_STOPS.map((s) => strikeForMultiple(options, s).reachable);
+    return { reach, ...strikeForMultiple(options, LEVERAGE_STOPS[stopIdx]) };
+  }, [spot, side, sigma, T, asset, account.limits.payoutCap, stopIdx]);
+  const strike = leverage?.option?.strike ?? null;
 
   const amt = Math.max(0, parseFloat(amount) || 0);
 
@@ -265,27 +263,6 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
     const room = Math.max(0, Math.min(account.limits.maxPerTrade, account.limits.maxPerRound - spentHere, balance ?? account.limits.maxPerTrade));
     return { perUnit, units, breakeven, chance, multiple, mp, block, room };
   }, [spot, strike, account, side, sigma, T, amt, asset, expiry, now]);
-
-  // Strike chips: at the money and four steps out on the chosen side (calls up, puts down), with their multiples.
-  // Strikes past the first one at the 20x cap would only lower the chance with no higher payout, so the
-  // chips (and the stepper) stop there.
-  const chips = useMemo(() => {
-    if (!spot || atmStrike === null) return [];
-    const all = Array.from({ length: MAX_STRIKE_STEPS + 1 }, (_, k) => {
-      const off = side === "call" ? k : -k;
-      const k$ = atmStrike + off * step;
-      return { off, strike: k$, multiple: winMultiple(side, spot, k$, sigma, T, account.limits.payoutCap) };
-    });
-    const capped = all.findIndex((c) => c.multiple >= account.limits.payoutCap - 1e-9);
-    return capped === -1 ? all : all.slice(0, capped + 1);
-  }, [spot, atmStrike, step, side, sigma, T, account.limits.payoutCap]);
-  const reach = chips.length ? chips.length - 1 : MAX_STRIKE_STEPS;
-  const minOff = side === "call" ? 0 : -reach;
-  const maxOff = side === "call" ? reach : 0;
-  // If the price moves and the cap now comes sooner, pull the selected strike back inside the range.
-  useEffect(() => {
-    setStrikeOff((o) => Math.min(maxOff, Math.max(minOff, o)));
-  }, [minOff, maxOff]);
 
   async function buy() {
     if (!account.signedIn) return account.signIn?.();
@@ -759,38 +736,44 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
 
             <div className="field">
               <div className="field-row">
-                <span className="lbl">Strike</span>
-                <span className="muted small">{strikeOff === 0 ? "At the money" : spot && strike ? `${signed(strike / spot - 1, (x) => pct(x, 2))} from price` : ""}</span>
+                <span className="lbl">Leverage</span>
+                <strong className={`lev-val ${side}`}>{LEVERAGE_STOPS[stopIdx]}×</strong>
               </div>
-              <div className="stepper">
-                <button aria-label="Lower strike" disabled={strikeOff <= minOff} onClick={() => setStrikeOff((o) => Math.max(minOff, o - 1))}>
-                  <Chevron dir="left" />
-                </button>
-                <span className="strike-val">
-                  <strong className="mult">{ticket ? mult(ticket.multiple) : "—"}</strong>
-                  <span className="sub">
-                    {strike !== null ? num(strike, asset === "BTC" ? 0 : 1) : "—"}
-                    {ticket ? ` · ${pct(ticket.chance, 0)} chance` : ""}
-                  </span>
-                </span>
-                <button aria-label="Higher strike" disabled={strikeOff >= maxOff} onClick={() => setStrikeOff((o) => Math.min(maxOff, o + 1))}>
-                  <Chevron dir="right" />
-                </button>
-              </div>
-              <div className="ladder" role="group" aria-label="Strikes by payout multiple">
-                {chips.map((c) => (
+              <input
+                className="lev"
+                type="range"
+                min={0}
+                max={LEVERAGE_STOPS.length - 1}
+                step={1}
+                value={stopIdx}
+                onChange={(e) => setStopIdx(Number(e.target.value))}
+                aria-label="Leverage"
+                aria-valuetext={`${LEVERAGE_STOPS[stopIdx]}× leverage`}
+              />
+              <div className="lev-stops">
+                {LEVERAGE_STOPS.map((s, i) => (
                   <button
-                    key={c.off}
-                    className={`${c.off === strikeOff ? "on" : ""} ${side}`}
-                    onClick={() => setStrikeOff(c.off)}
-                    aria-pressed={c.off === strikeOff}
-                    aria-label={`Strike ${num(c.strike, asset === "BTC" ? 0 : 1)}, win about ${mult(c.multiple)}`}
-                    title={num(c.strike, asset === "BTC" ? 0 : 1)}
+                    key={s}
+                    className={i === stopIdx ? "on" : ""}
+                    disabled={leverage ? !leverage.reach[i] : false}
+                    onClick={() => setStopIdx(i)}
+                    aria-label={`${s}× leverage`}
+                    aria-pressed={i === stopIdx}
                   >
-                    {mult(c.multiple)}
+                    {s}×
                   </button>
                 ))}
               </div>
+              <div className="lev-ends" aria-hidden="true">
+                <span>Safe</span>
+                <span>Wild</span>
+              </div>
+              <div className="lev-info mono">
+                {ticket && strike !== null
+                  ? `Strike ${num(strike, asset === "BTC" ? 0 : 1)} · win ≈ ${mult(ticket.multiple)} · ${pct(ticket.chance, 0)} chance`
+                  : "—"}
+              </div>
+              {leverage && !leverage.reachable && <div className="lev-max">max ≈ {mult(leverage.max)} this round</div>}
             </div>
 
             <div className="field">
