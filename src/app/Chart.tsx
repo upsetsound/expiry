@@ -6,6 +6,7 @@ import type { Asset, Sample, Series } from "@/lib/feeds";
 import type { Side } from "@/lib/pricing";
 
 const YEAR_MS = 365 * 24 * 60 * 60_000;
+// Canvas colours. Theme-dependent ones are refreshed from the CSS variables when data-theme changes.
 const C = {
   text: "#EAF4F1",
   muted: "#7F9792",
@@ -15,7 +16,22 @@ const C = {
   orange: "#FFB27A",
   bg: "#0B1513",
   tagBg: "#1A2E2A",
+  labelBg: "rgba(11,21,19,0.85)",
 };
+let themeSeen: string | undefined = "init";
+function syncTheme() {
+  const theme = document.documentElement.dataset.theme;
+  if (theme === themeSeen) return;
+  themeSeen = theme;
+  const css = getComputedStyle(document.documentElement);
+  const v = (name: string, fallback: string) => css.getPropertyValue(name).trim() || fallback;
+  C.text = v("--text", "#EAF4F1");
+  C.line = C.text;
+  C.muted = v("--muted", "#7F9792");
+  C.bg = v("--bg", "#0B1513");
+  C.tagBg = v("--tag-bg", "#1A2E2A");
+  C.labelBg = theme === "black" ? "rgba(10,10,10,0.85)" : "rgba(11,21,19,0.85)";
+}
 const M = { top: 12, right: 78, bottom: 26, left: 0 };
 const MIN_SPAN = 20_000;
 const MAX_SPAN = 5 * 60 * 60_000;
@@ -128,6 +144,7 @@ export default function Chart(props: Props) {
 
     const draw = () => {
       raf = requestAnimationFrame(draw);
+      syncTheme();
       const p = live.current;
       const v = view.current;
       const now = Date.now();
@@ -404,7 +421,7 @@ export default function Chart(props: Props) {
         const lx = M.left + plotW - 6;
         const ly = py < M.top + 20 ? py + 4 : py - 18;
         roundRect(ctx, lx - tw, ly, tw, 16, 3);
-        ctx.fillStyle = "rgba(11,21,19,0.85)";
+        ctx.fillStyle = C.labelBg;
         ctx.fill();
         ctx.fillStyle = pos.side === "call" ? C.mint : C.orange;
         ctx.fillText(pos.label, lx - 5, ly + 12);

@@ -5,7 +5,7 @@ import type { Tenor } from "./schedule";
 const TENOR_WORDS: Record<Tenor, string> = { "1m": "1-minute", "5m": "5-minute", "15m": "15-minute", "1h": "1-hour" };
 
 // Payout multiple: one decimal under 10x ("4.2×"), whole numbers above ("14×").
-export const formatMultiple = (m: number) => `${m < 10 ? m.toFixed(1) : Math.round(m)}×`;
+export const formatMultiple = (m: number) => `${m < 9.95 ? m.toFixed(1) : Math.round(m)}×`; // 9.97 -> "10×", not "10.0×"
 
 // "Just hit 8.4× on a 1-minute BTC call on @handle 📈 <link>" — the handle and link parts are left out when unset.
 // The link is the win's /w/<id> page when there is one (it renders as a card on X), else the site.

@@ -1,7 +1,7 @@
 // Payout multiples shown on the ticket and the chart.
 import { describe, expect, it } from "vitest";
 import { RULES, bsPrice, liveMultiple, priceTicket, strikeStep, winMultiple } from "@/lib/pricing";
-import { shareText, shareUrl, winLink } from "@/lib/share";
+import { formatMultiple, shareText, shareUrl, winLink } from "@/lib/share";
 
 const SPOT = 76_000;
 const SIGMA = 0.5;
@@ -79,5 +79,11 @@ describe("share text", () => {
   });
   it("keeps demo wins (local ids) on the plain site link", () => {
     expect(winLink(r, "https://expiry.example")).toBeNull();
+  });
+});
+
+describe("formatMultiple", () => {
+  it("uses one decimal under 10x and whole numbers from 10x", () => {
+    expect([1.84, 4.2, 9.94, 9.97, 10, 14.4, 20].map(formatMultiple)).toEqual(["1.8×", "4.2×", "9.9×", "10×", "10×", "14×", "20×"]);
   });
 });

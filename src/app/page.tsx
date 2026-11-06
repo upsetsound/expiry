@@ -71,6 +71,31 @@ function Speaker({ muted }: { muted: boolean }) {
   );
 }
 
+// Theme toggle: dark green (default) or black. Saved per browser; the layout applies it before first paint.
+function useTheme() {
+  const [black, setBlack] = useState(false);
+  useEffect(() => setBlack(document.documentElement.dataset.theme === "black"), []);
+  const toggle = () => {
+    const next = !black;
+    setBlack(next);
+    if (next) document.documentElement.dataset.theme = "black";
+    else delete document.documentElement.dataset.theme;
+    try {
+      localStorage.setItem("expiry.theme", next ? "black" : "green");
+    } catch {}
+  };
+  return { black, toggle };
+}
+
+function ThemeIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" strokeWidth={2} />
+      <path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor" />
+    </svg>
+  );
+}
+
 // First-visit explainer at the top of the ticket (live mode), until dismissed. Dismissal is saved per browser.
 const INTRO_KEY = "expiry.intro.dismissed";
 function useIntro() {
@@ -307,6 +332,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   const [win, setWin] = useState<RoundResult | null>(null);
   const sound = useSound();
   const intro = useIntro();
+  const theme = useTheme();
   useRoundResults(account.positions, (r: RoundResult) => {
     setSettled$({ asset: r.asset, tenor: r.tenor, expiry: r.expiry, price: r.settle, until: Date.now() + 2_000 });
     // Profitable rounds get the win card; losses keep the small red toast.
@@ -553,6 +579,9 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
           </div>
         </div>
         <div className="nav-right">
+          <button className="mute" onClick={theme.toggle} aria-label={theme.black ? "Switch to green theme" : "Switch to black theme"} title={theme.black ? "Green theme" : "Black theme"}>
+            <ThemeIcon />
+          </button>
           <button className="mute" onClick={sound.toggle} aria-label={sound.muted ? "Turn sounds on" : "Mute sounds"} aria-pressed={sound.muted} title={sound.muted ? "Sounds off" : "Sounds on"}>
             <Speaker muted={sound.muted} />
           </button>

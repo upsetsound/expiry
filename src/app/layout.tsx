@@ -16,8 +16,12 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
+        <script
+          // Apply the saved theme before the first paint (no flash of the other theme).
+          dangerouslySetInnerHTML={{ __html: "try{if(localStorage.getItem('expiry.theme')==='black')document.documentElement.dataset.theme='black'}catch(e){}" }}
+        />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link
           rel="stylesheet"
