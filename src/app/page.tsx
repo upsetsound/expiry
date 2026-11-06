@@ -531,7 +531,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
     <div className={`prize-banner ${prizes?.enabled ? "on" : ""}`}>
       <span>{prizeLine}</span>
       <span className="muted">
-        Free to enter · paper money · <a href="/rules">Rules</a>
+        Free to enter · paper money · <a href="/rules">Rules</a> · <a href="/terms">Terms</a> · <a href="/privacy">Privacy</a>
       </span>
     </div>
   );

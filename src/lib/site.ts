@@ -8,3 +8,7 @@ export function siteUrl(): string {
 }
 
 export const TAGLINE = "BTC & ETH options that expire in a minute";
+
+// Where people reach us (privacy requests, questions): an X account.
+export const CONTACT_X = process.env.NEXT_PUBLIC_X_HANDLE?.trim() || "harambundle";
+export const POLICY_DATE = "November 6, 2026";

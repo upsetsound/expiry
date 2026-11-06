@@ -358,3 +358,8 @@ h2 { font-size: 13px; margin: 28px 0 8px; font-weight: 600; color: var(--muted);
 .username-form { display: flex; gap: 8px; }
 .username-input { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: var(--r); background: var(--panel); color: var(--text); font: inherit; }
 .username-input:focus { outline: none; border-color: var(--text); }
+
+/* Privacy policy and terms */
+.legal h2 { font-size: 16px; margin: 24px 0 8px; }
+.legal p, .legal ul { max-width: 680px; line-height: 1.6; }
+.legal ul { display: flex; flex-direction: column; gap: 8px; padding-left: 20px; }
