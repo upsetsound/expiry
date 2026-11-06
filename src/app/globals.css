@@ -276,4 +276,6 @@ h2 { font-size: 13px; margin: 28px 0 8px; font-weight: 600; color: var(--muted);
   .stepper button { min-width: 44px; }
   .stepper { grid-template-columns: 44px 1fr 44px; }
   .btab { min-height: 40px; }
+  /* Wide tables (leaderboard, portfolio, admin) scroll inside themselves instead of widening the page. */
+  .page .tbl { display: block; overflow-x: auto; max-width: 100%; }
 }
