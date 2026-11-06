@@ -15,7 +15,7 @@ const DB_ERRORS: Record<string, [number, string]> = {
 
 export async function POST(request: Request) {
   const userId = await currentUserId();
-  if (!userId) return NextResponse.json({ error: "signed_out", message: "Sign in with X first" }, { status: 401 });
+  if (!userId) return NextResponse.json({ error: "signed_out", message: "Sign in first" }, { status: 401 });
   const input = parseClose(await request.json().catch(() => null));
   if (!input) return NextResponse.json({ error: "bad_request", message: "Invalid close" }, { status: 400 });
 

@@ -350,3 +350,11 @@ h2 { font-size: 13px; margin: 28px 0 8px; font-weight: 600; color: var(--muted);
 .share-note { margin: 0; color: var(--muted); word-break: break-all; }
 .crop { display: flex; flex-direction: column; gap: 8px; }
 .crop-frame { width: 100%; aspect-ratio: 1200 / 670; border-radius: 10px; background-size: cover; background-repeat: no-repeat; cursor: grab; touch-action: none; }
+
+/* Sign-in choice and username step */
+.signin-modal { width: min(380px, 100%); }
+.signin-options { display: flex; flex-direction: column; gap: 8px; }
+.signin-options button, .username-form button { height: 40px; padding: 0 14px; border-radius: 8px; font-size: 14px; font-weight: 600; }
+.username-form { display: flex; gap: 8px; }
+.username-input { flex: 1; min-width: 0; height: 40px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: var(--r); background: var(--panel); color: var(--text); font: inherit; }
+.username-input:focus { outline: none; border-color: var(--text); }

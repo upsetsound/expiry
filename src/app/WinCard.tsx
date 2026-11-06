@@ -12,7 +12,7 @@ const SHOW_MS = 4_000;
 const SCALE = 0.42;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function cardFor(r: RoundResult, me: { handle: string | null; avatar: string | null } | null): CardData {
+function cardFor(r: RoundResult, me: { handle: string | null; avatar: string | null; isX?: boolean } | null): CardData {
   const one = r.positions.length === 1 ? r.positions[0] : null;
   const at = one?.closedAt ?? Date.now();
   const strike = one ? one.strike.toLocaleString("en-US", { maximumFractionDigits: r.asset === "BTC" ? 0 : 2 }) : null;
@@ -27,6 +27,7 @@ function cardFor(r: RoundResult, me: { handle: string | null; avatar: string | n
     profit: r.pnl >= 0,
     pill: { coin: r.asset === "BTC" ? "₿" : "Ξ", text: formatMultiple(r.multiple) },
     handle: me?.handle ?? null,
+    isX: me?.isX,
     avatar: me?.avatar ?? null,
     site: (process.env.NEXT_PUBLIC_SITE_URL || window.location.origin).replace(/^https?:\/\//, ""),
     photo: null,
@@ -40,7 +41,7 @@ export default function WinCard({
   onShare,
 }: {
   result: RoundResult;
-  me: { handle: string | null; avatar: string | null } | null;
+  me: { handle: string | null; avatar: string | null; isX?: boolean } | null;
   onClose: () => void;
   onShare?: (t: ShareTarget) => void;
 }) {

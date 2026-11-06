@@ -10,7 +10,10 @@ import { TENORS, type Tenor } from "./schedule";
 import { START_BALANCE, START_POOL, TOP_UP_BELOW, WEEK_MS, freshAccount, loadAccount, saveAccount, type Account, type Position } from "./store";
 
 export type { Position } from "./store";
-export type Trader = { id: string; handle: string | null; avatar: string | null };
+// handle: the X handle, or for Google players the username they picked (isX false: shown without "@").
+export type Trader = { id: string; handle: string | null; avatar: string | null; isX?: boolean };
+export const traderName = (t: { handle: string | null; isX?: boolean } | null | undefined) => (t?.handle ? (t.isX === false ? t.handle : "@" + t.handle) : null);
+export type Provider = "x" | "google";
 export type TapeItem = Position & { trader?: Trader };
 export type PoolState = { balance: number; premiumsIn: number; paidOut: number };
 export type AssetStats = { vol24: number; callOi: number; putOi: number };
@@ -19,6 +22,7 @@ export type LeaderRow = {
   rank: number;
   userId: string;
   handle: string | null;
+  isX?: boolean;
   avatar: string | null;
   pnl: number;
   trades: number;
@@ -68,7 +72,9 @@ export type AccountApi = {
   topUp: () => Promise<void>;
   close: (p: Position, shownBid: number) => Promise<CloseResult>;
   reset?: () => void;
-  signIn?: () => void;
+  signIn?: (provider: Provider) => void;
+  needsUsername?: boolean; // live: signed in with Google and no username yet
+  setUsername?: (name: string) => Promise<{ ok: boolean; message?: string }>;
   signOut?: () => void;
 };
 

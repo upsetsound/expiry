@@ -30,7 +30,7 @@ type Row = {
   close_proceeds: number | string | null;
   closed_at: string | null;
 };
-type Me = { id: string; x_handle: string | null; avatar_url: string | null; balance: number; points: number; last_top_up: string };
+type Me = { id: string; x_handle: string | null; username: string | null; avatar_url: string | null; balance: number; points: number; last_top_up: string };
 
 const COLS = "id,user_id,asset,side,strike,tenor,expiry,premium,units,max_payout,payout_cap,spot_at_buy,status,settle_price,payout,created_at,settled_at,close_price,close_proceeds,closed_at";
 const TAPE_LEN = 30;
@@ -107,11 +107,11 @@ export function useLiveAccount(notify: Notify): AccountApi {
     async (ids: string[]) => {
       const missing = Array.from(new Set(ids)).filter((id) => !(id in traders));
       if (!missing.length) return;
-      const { data } = await sb.from("profiles").select("id,x_handle,avatar_url").in("id", missing);
+      const { data } = await sb.from("profiles").select("id,x_handle,username,avatar_url").in("id", missing);
       if (data)
         setTraders((t) => {
           const next = { ...t };
-          for (const p of data) next[p.id] = { id: p.id, handle: p.x_handle, avatar: p.avatar_url };
+          for (const p of data) next[p.id] = { id: p.id, handle: p.x_handle ?? p.username, avatar: p.avatar_url, isX: !!p.x_handle };
           return next;
         });
     },
@@ -139,7 +139,8 @@ export function useLiveAccount(notify: Notify): AccountApi {
       (data as Record<string, unknown>[]).map((r) => ({
         rank: Number(r.rank),
         userId: String(r.user_id),
-        handle: (r.x_handle as string) ?? null,
+        handle: ((r.x_handle ?? r.username) as string) ?? null,
+        isX: !!r.x_handle,
         avatar: (r.avatar_url as string) ?? null,
         pnl: Number(r.pnl),
         trades: Number(r.trades),
@@ -268,7 +269,8 @@ export function useLiveAccount(notify: Notify): AccountApi {
     mode: "live",
     ready: userId !== undefined,
     signedIn,
-    me: me ? { id: me.id, handle: me.x_handle, avatar: me.avatar_url } : null,
+    me: me ? { id: me.id, handle: me.x_handle ?? me.username, avatar: me.avatar_url, isX: !!me.x_handle } : null,
+    needsUsername: !!me && !me.x_handle && !me.username,
     balance: me?.balance ?? null,
     points: me?.points ?? null,
     canTopUp: !!me && me.balance < TOP_UP_BELOW && now - Date.parse(me.last_top_up) > WEEK_MS,
@@ -282,7 +284,7 @@ export function useLiveAccount(notify: Notify): AccountApi {
     prizes,
     limits,
     async buy(r) {
-      if (!signedIn) return { ok: false, message: "Sign in with X to trade" };
+      if (!signedIn) return { ok: false, message: "Sign in to trade" };
       const res = await fetch("/api/buy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -319,8 +321,23 @@ export function useLiveAccount(notify: Notify): AccountApi {
       if (!res.ok) notifyRef.current(body?.message ?? "Top-up failed", "neg");
       await loadMe();
     },
-    signIn() {
-      sb.auth.signInWithOAuth({ provider: "x", options: { redirectTo: `${window.location.origin}/auth/callback` } });
+    signIn(provider) {
+      sb.auth.signInWithOAuth({ provider, options: { redirectTo: `${window.location.origin}/auth/callback` } });
+    },
+    async setUsername(name) {
+      const { data, error } = await sb.rpc("set_username", { p_name: name });
+      const r = data as { ok?: boolean; error?: string } | null;
+      if (error || !r?.ok) {
+        const why: Record<string, string> = {
+          bad_format: "3–15 letters, numbers or _",
+          taken: "That name is taken",
+          already_set: "You already have a username",
+          has_x: "Your X handle is your name",
+        };
+        return { ok: false, message: why[r?.error ?? ""] ?? "Couldn\x27t save. Try again." };
+      }
+      await loadMe();
+      return { ok: true };
     },
     async signOut() {
       await sb.auth.signOut();

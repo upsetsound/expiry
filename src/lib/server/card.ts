@@ -81,8 +81,8 @@ type Row = {
 };
 
 async function profile(userId: string) {
-  const { data } = await supabaseAdmin().from("profiles").select("x_handle,avatar_url").eq("id", userId).maybeSingle();
-  return { handle: (data?.x_handle as string) ?? null, avatar: (data?.avatar_url as string) ?? null };
+  const { data } = await supabaseAdmin().from("profiles").select("x_handle,username,avatar_url").eq("id", userId).maybeSingle();
+  return { handle: ((data?.x_handle ?? data?.username) as string) ?? null, isX: !!data?.x_handle, avatar: (data?.avatar_url as string) ?? null };
 }
 
 // One settled or closed position. Null for unknown ids and open positions.
@@ -116,7 +116,12 @@ export async function dayCard(handle: string, date: string, tz: string, bg?: str
   const range = dayRange(date, tz);
   if (!range) return null;
   const db = supabaseAdmin();
-  const { data: who } = await db.from("profiles").select("id,x_handle,avatar_url").ilike("x_handle", handle.replace(/[%_]/g, "")).maybeSingle();
+  // An X handle first, then a Google username (case-insensitive; LIKE wildcards escaped so "_" matches only "_").
+  const pattern = handle.replace(/[\\%_]/g, (c) => "\\" + c);
+  const cols = "id,x_handle,username,avatar_url";
+  const who =
+    (await db.from("profiles").select(cols).ilike("x_handle", pattern).limit(1).maybeSingle()).data ??
+    (await db.from("profiles").select(cols).ilike("username", pattern).limit(1).maybeSingle()).data;
   if (!who) return null;
   const [from, to] = [new Date(range[0]).toISOString(), new Date(range[1]).toISOString()];
   const { data: rows } = await db
@@ -145,7 +150,8 @@ export async function dayCard(handle: string, date: string, tz: string, bg?: str
     pnl: money(pnl),
     profit: pnl >= 0,
     pill: { coin: null, text: start && start > 0 ? `${pnl >= 0 ? "+" : "−"}${Math.abs((100 * pnl) / start).toFixed(1)}%` : "—" },
-    handle: (who.x_handle as string) ?? null,
+    handle: ((who.x_handle ?? who.username) as string) ?? null,
+    isX: !!who.x_handle,
     avatar: (who.avatar_url as string) ?? null,
     site: site(),
     photo: await photoUrl(who.id as string, bg),
