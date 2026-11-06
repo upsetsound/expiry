@@ -98,7 +98,7 @@ describe("server-side checks", () => {
     }
   });
   it("enforces the per-trade premium limits", () => {
-    const hi = prepareBuy(input(t, "put", "1m", 250.01), { spot: SPOT, sigma: SIGMA }, NOW);
+    const hi = prepareBuy(input(t, "put", "1m", 1000.01), { spot: SPOT, sigma: SIGMA }, NOW);
     const lo = prepareBuy(input(t, "put", "1m", 0.5), { spot: SPOT, sigma: SIGMA }, NOW);
     expect(!hi.ok && hi.error).toBe("max_per_trade");
     expect(!lo.ok && lo.error).toBe("min_premium");
@@ -112,8 +112,24 @@ describe("server-side checks", () => {
 });
 
 describe("payout rule", () => {
-  it("caps at 20x premium", () => {
-    expect(payout("call", 80_000, 76_000, 1, 10)).toBe(200);
+  it("pays min(intrinsic x units, cap x premium) with the position's own cap", () => {
+    expect(payout("call", 80_000, 76_000, 1, 10)).toBe(1000); // 100x default cap
+    expect(payout("call", 80_000, 76_000, 1, 10, 20)).toBe(200); // a position bought under the old 20x cap
+    expect(payout("call", 76_500, 76_000, 1, 10)).toBe(500); // under the cap: intrinsic x units
     expect(payout("put", 80_000, 76_000, 1, 10)).toBe(0);
+  });
+});
+
+describe("limits come from settings", () => {
+  const t = clientTicket("call", "1h", 0, 10);
+  const strict = { maxPerTrade: 50, maxPerRound: 100, payoutCap: 30 };
+  it("rejects a premium over the configured per-trade limit even if the client allows it", () => {
+    const r = prepareBuy(input(t, "call", "1h", 60), { spot: SPOT, sigma: SIGMA }, NOW, strict);
+    expect(!r.ok && r.error).toBe("max_per_trade");
+    expect(!r.ok && r.message).toBe("Max $50 per trade");
+  });
+  it("prices with the configured payout cap", () => {
+    const r = prepareBuy(input(t, "call", "1h", 10), { spot: SPOT, sigma: SIGMA }, NOW, strict);
+    expect(r.ok && r.rpc.p_max_payout).toBeLessThanOrEqual(300);
   });
 });

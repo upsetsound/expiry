@@ -243,10 +243,10 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
 
   const ticket = useMemo(() => {
     if (!spot || strike === null || !account.ready) return null;
-    const { perUnit, units, maxPayout: mp } = priceTicket(side, spot, strike, sigma, expiry, now, amt);
+    const { perUnit, units, maxPayout: mp } = priceTicket(side, spot, strike, sigma, expiry, now, amt, account.limits.payoutCap);
     const breakeven = side === "call" ? strike + perUnit : strike - perUnit;
     const chance = probITM(side, spot, strike, sigma, T);
-    const multiple = winMultiple(side, spot, strike, sigma, T);
+    const multiple = winMultiple(side, spot, strike, sigma, T, account.limits.payoutCap);
     const here = account.positions.filter((p) => p.status === "open" && p.asset === asset && p.expiry === expiry);
     const spentHere = here.reduce((s, p) => s + p.premium, 0);
     // Pool limits count every open position against the pool (shared in live mode, your own in demo).
@@ -258,11 +258,11 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
     let block: string | null = null;
     if (!account.signedIn) block = "Sign in with X to trade";
     else if (amt < RULES.minPremium) block = `Minimum ${usd(RULES.minPremium, 0)}`;
-    else if (amt > RULES.maxPremiumPerPosition) block = `Max ${usd(RULES.maxPremiumPerPosition, 0)} per trade`;
-    else if (spentHere + amt > RULES.maxPremiumPerExpiry) block = `Max ${usd(RULES.maxPremiumPerExpiry, 0)} per expiry`;
+    else if (amt > account.limits.maxPerTrade) block = `Max ${usd(account.limits.maxPerTrade, 0)} per trade`;
+    else if (spentHere + amt > account.limits.maxPerRound) block = `Max ${usd(account.limits.maxPerRound, 0)} per round`;
     else if (balance !== null && amt > balance) block = "Not enough balance";
     else if (sideLiab + mp > RULES.sidePoolShare * poolBal || totalLiab + mp > RULES.totalPoolShare * poolBal) block = "Pool limit reached";
-    const room = Math.max(0, Math.min(RULES.maxPremiumPerPosition, RULES.maxPremiumPerExpiry - spentHere, balance ?? RULES.maxPremiumPerPosition));
+    const room = Math.max(0, Math.min(account.limits.maxPerTrade, account.limits.maxPerRound - spentHere, balance ?? account.limits.maxPerTrade));
     return { perUnit, units, breakeven, chance, multiple, mp, block, room };
   }, [spot, strike, account, side, sigma, T, amt, asset, expiry, now]);
 
@@ -274,11 +274,11 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
     const all = Array.from({ length: MAX_STRIKE_STEPS + 1 }, (_, k) => {
       const off = side === "call" ? k : -k;
       const k$ = atmStrike + off * step;
-      return { off, strike: k$, multiple: winMultiple(side, spot, k$, sigma, T) };
+      return { off, strike: k$, multiple: winMultiple(side, spot, k$, sigma, T, account.limits.payoutCap) };
     });
-    const capped = all.findIndex((c) => c.multiple >= RULES.payoutCap - 1e-9);
+    const capped = all.findIndex((c) => c.multiple >= account.limits.payoutCap - 1e-9);
     return capped === -1 ? all : all.slice(0, capped + 1);
-  }, [spot, atmStrike, step, side, sigma, T]);
+  }, [spot, atmStrike, step, side, sigma, T, account.limits.payoutCap]);
   const reach = chips.length ? chips.length - 1 : MAX_STRIKE_STEPS;
   const minOff = side === "call" ? 0 : -reach;
   const maxOff = side === "call" ? reach : 0;
@@ -545,7 +545,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
       <div>
         <dt>Limits</dt>
         <dd>
-          {usd(RULES.maxPremiumPerPosition, 0)} per trade · {usd(RULES.maxPremiumPerExpiry, 0)} per expiry · {RULES.payoutCap}× payout cap
+          {usd(account.limits.maxPerTrade, 0)} per trade · {usd(account.limits.maxPerRound, 0)} per round · {account.limits.payoutCap}× payout cap
         </dd>
       </div>
     </dl>
@@ -799,7 +799,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
               </div>
               <div className="amount">
                 <button onClick={() => setAmount(String(Math.max(1, Math.round(amt / 2))))}>½×</button>
-                <button onClick={() => setAmount(String(Math.min(RULES.maxPremiumPerPosition, Math.round(amt * 2) || 1)))}>2×</button>
+                <button onClick={() => setAmount(String(Math.min(account.limits.maxPerTrade, Math.round(amt * 2) || 1)))}>2×</button>
                 <button onClick={() => ticket && setAmount(String(Math.floor(ticket.room)))}>Max</button>
                 <input inputMode="decimal" aria-label="Premium in USDC" value={amount} onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ""))} />
               </div>
@@ -816,7 +816,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
               </div>
               <div>
                 <dt>Max payout</dt>
-                <dd>{usd(RULES.payoutCap * amt, 0)}</dd>
+                <dd>{usd(account.limits.payoutCap * amt, 0)}</dd>
               </div>
             </dl>
 

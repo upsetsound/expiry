@@ -1,6 +1,6 @@
 // Payout multiples shown on the ticket and the chart.
 import { describe, expect, it } from "vitest";
-import { RULES, bsPrice, liveMultiple, priceTicket, strikeStep, winMultiple } from "@/lib/pricing";
+import { RULES, bsPrice, liveMultiple, maxPayout, priceTicket, strikeStep, winMultiple } from "@/lib/pricing";
 import { formatMultiple, shareText, shareUrl, winLink } from "@/lib/share";
 
 const SPOT = 76_000;
@@ -28,7 +28,7 @@ describe("winMultiple", () => {
     expect(winMultiple("call", SPOT, SPOT - step, SIGMA, T5m)).toBeLessThan(calls[0]);
   });
 
-  it("never exceeds the 20x cap", () => {
+  it("never exceeds the cap (100x by default, or a configured cap)", () => {
     const cases: [number, number][] = [
       [SPOT * 1.05, T5m],
       [SPOT * 1.5, T5m],
@@ -40,6 +40,17 @@ describe("winMultiple", () => {
       expect(winMultiple("put", SPOT, 2 * SPOT - k, SIGMA, T)).toBeLessThanOrEqual(RULES.payoutCap);
     }
     expect(winMultiple("call", SPOT, SPOT * 1.5, SIGMA, T5m)).toBe(RULES.payoutCap);
+    expect(RULES.payoutCap).toBe(100);
+    expect(winMultiple("call", SPOT, SPOT * 1.5, SIGMA, T5m, 20)).toBe(20);
+  });
+
+  it("counts far strikes at the full cap for the pool's liability limits", () => {
+    // A strike 4 expected moves out sits beyond the 3-move stress price; it must not count as zero risk.
+    const t = priceTicket("call", SPOT, SPOT, SIGMA, 5 * 60_000, 0, 10);
+    const far = SPOT + 4 * t.em;
+    const ticket = priceTicket("call", SPOT, far, SIGMA, 5 * 60_000, 0, 1000);
+    expect(ticket.maxPayout).toBe(100 * 1000);
+    expect(maxPayout("put", SPOT, SPOT - 4 * t.em, ticket.units, 1000, t.em)).toBe(100 * 1000);
   });
 
 });
@@ -50,7 +61,7 @@ describe("liveMultiple", () => {
     const m = liveMultiple(pos, SPOT, SIGMA, 0);
     expect(m).toBeCloseTo((bsPrice("call", SPOT, SPOT, SIGMA, T5m) * 0.5) / 10, 10);
   });
-  it("is capped at 20x and is intrinsic at expiry", () => {
+  it("is capped at the payout cap and is intrinsic at expiry", () => {
     expect(liveMultiple(pos, SPOT * 2, SIGMA, 0)).toBe(RULES.payoutCap);
     expect(liveMultiple(pos, SPOT + 20, SIGMA, pos.expiry)).toBeCloseTo(1, 10);
     expect(liveMultiple(pos, SPOT - 20, SIGMA, pos.expiry)).toBe(0);

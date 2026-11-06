@@ -4,7 +4,7 @@
 //   useLiveAccount  — Supabase: X sign-in, shared pool, server-side buys and settlement (src/lib/liveAccount.ts)
 import { useEffect, useRef, useState } from "react";
 import { fetchSettlementFallback, twap, type Asset, type MarketState } from "./feeds";
-import { payout as payoutFor, type Side } from "./pricing";
+import { DEFAULT_LIMITS, payout as payoutFor, type Limits, type Side } from "./pricing";
 import { TENORS, type Tenor } from "./schedule";
 import { START_BALANCE, START_POOL, TOP_UP_BELOW, WEEK_MS, freshAccount, loadAccount, saveAccount, type Account, type Position } from "./store";
 
@@ -61,6 +61,7 @@ export type AccountApi = {
   leaderboard: LeaderRow[] | null; // live only
   vol: Record<Asset, ServerVol> | null; // live: the server's pricing vol, so shown quotes match /api/buy
   prizes: Prizes | null; // live: weekly prize settings from the settings row
+  limits: Limits; // per-trade and per-round premium limits and the payout cap (settings row; code defaults in demo)
   buy: (r: BuyRequest) => Promise<BuyResult>;
   topUp: () => Promise<void>;
   reset?: () => void;
@@ -97,7 +98,7 @@ export function useLocalAccount(market: MarketState): AccountApi {
       const from = p.expiry - TENORS[p.tenor].window;
       const lv = twap(market.samples.current[p.asset], from, p.expiry);
       const finish = (price: number) => {
-        const paid = payoutFor(p.side, price, p.strike, p.units, p.premium);
+        const paid = payoutFor(p.side, price, p.strike, p.units, p.premium, p.payoutCap ?? 20);
         setAcct((a) => {
           if (!a) return a;
           const pos = a.positions.find((x) => x.id === p.id);
@@ -140,6 +141,7 @@ export function useLocalAccount(market: MarketState): AccountApi {
     leaderboard: null,
     vol: null,
     prizes: null,
+    limits: DEFAULT_LIMITS,
     async buy(r) {
       if (!acct) return { ok: false, message: "Loading…" };
       const key = `${r.asset}-${r.expiry}`;
@@ -156,6 +158,7 @@ export function useLocalAccount(market: MarketState): AccountApi {
         premium: r.premium,
         units: r.units,
         maxPayout: r.maxPayout,
+        payoutCap: DEFAULT_LIMITS.payoutCap,
         boughtAt: Date.now(),
         spotAtBuy: r.spot,
         status: "open",

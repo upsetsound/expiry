@@ -14,6 +14,7 @@ export type Position = {
   premium: number; // dollars paid
   units: number; // units of the underlying
   maxPayout: number;
+  payoutCap?: number; // the payout cap when bought (older demo positions: 20)
   boughtAt: number;
   spotAtBuy: number;
   status: "open" | "settled";

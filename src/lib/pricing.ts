@@ -4,9 +4,10 @@ export const RULES = {
   baseEdge: 0.10, // 10% over fair value
   volFloor: 0.35, // 35% annualized floor
   realizedMult: 1.25, // 1.25 x realized vol
-  payoutCap: 20, // max payout = 20 x premium
-  maxPremiumPerPosition: 250,
-  maxPremiumPerExpiry: 1000,
+  // Defaults (demo mode, and live until the settings row loads). Live values come from the Supabase settings row.
+  payoutCap: 100, // max payout = 100 x premium
+  maxPremiumPerPosition: 1000,
+  maxPremiumPerExpiry: 5000, // per user, per round (asset + expiry)
   sidePoolShare: 0.3, // per expiry, per side: max payout <= 30% of pool
   totalPoolShare: 0.6, // all open options: max payout <= 60% of pool
   ladderK: [-2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2],
@@ -14,6 +15,10 @@ export const RULES = {
 };
 
 const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+
+// The limits that can change without a deploy (Supabase settings row). Code defaults above.
+export type Limits = { maxPerTrade: number; maxPerRound: number; payoutCap: number };
+export const DEFAULT_LIMITS: Limits = { maxPerTrade: RULES.maxPremiumPerPosition, maxPerRound: RULES.maxPremiumPerExpiry, payoutCap: RULES.payoutCap };
 
 export type Side = "call" | "put";
 
@@ -77,19 +82,23 @@ export function intrinsic(side: Side, settle: number, strike: number): number {
   return Math.max(side === "call" ? settle - strike : strike - settle, 0);
 }
 
-// Payout for a position: units x intrinsic, capped at payoutCap x premium.
-export function payout(side: Side, settle: number, strike: number, units: number, premium: number): number {
-  return Math.min(units * intrinsic(side, settle, strike), RULES.payoutCap * premium);
+// Payout for a position: units x intrinsic, capped at cap x premium (the cap the position was bought with).
+export function payout(side: Side, settle: number, strike: number, units: number, premium: number, cap = RULES.payoutCap): number {
+  return Math.min(units * intrinsic(side, settle, strike), cap * premium);
 }
 
-// Max payout used for liability caps: the lower of the 20x cap and payout at a 3-expected-move price.
-export function maxPayout(side: Side, spot: number, strike: number, units: number, premium: number, em: number): number {
-  const stress = side === "call" ? spot + 3 * em : spot - 3 * em;
-  return Math.min(units * intrinsic(side, stress, strike), RULES.payoutCap * premium);
+// Max payout used for the pool's liability limits: the payout if the price ends one expected move past the strike
+// or three expected moves from spot, whichever is further, capped at cap x premium. (A strike beyond the 3-move
+// stress price would otherwise count as zero risk even though it can pay the full cap.)
+export function maxPayout(side: Side, spot: number, strike: number, units: number, premium: number, em: number, cap = RULES.payoutCap): number {
+  const stress = side === "call" ? Math.max(spot + 3 * em, strike + em) : Math.min(spot - 3 * em, strike - em);
+  return Math.min(units * intrinsic(side, stress, strike), cap * premium);
 }
 
-// Strikes offered: at-the-money plus up to this many steps either side.
+// Strikes offered: at-the-money plus up to this many steps either side (strike stepper; superseded by the
+// leverage slider, which searches out to MAX_EM_OUT expected moves).
 export const MAX_STRIKE_STEPS = 4;
+export const MAX_EM_OUT = 4;
 
 // Strike step: a round number near half an expected move, at least one tick.
 export function strikeStep(em: number, tick: number): number {
@@ -102,12 +111,12 @@ export function strikeStep(em: number, tick: number): number {
 }
 
 // Everything a ticket needs from the market inputs. The client's ticket and the server's /api/buy both use this.
-export function priceTicket(side: Side, spot: number, strike: number, sigma: number, expiryMs: number, nowMs: number, premium: number) {
+export function priceTicket(side: Side, spot: number, strike: number, sigma: number, expiryMs: number, nowMs: number, premium: number, cap = RULES.payoutCap) {
   const T = yearsUntil(expiryMs, nowMs);
   const em = expectedMove(spot, sigma, T);
   const perUnit = quote(side, spot, strike, sigma, T);
   const units = perUnit > 0 ? premium / perUnit : 0;
-  return { T, em, perUnit, units, maxPayout: maxPayout(side, spot, strike, units, premium, em) };
+  return { T, em, perUnit, units, maxPayout: maxPayout(side, spot, strike, units, premium, em, cap) };
 }
 
 // Chance the option finishes in the money under the pricing vol (no edge).
@@ -120,19 +129,20 @@ export function probITM(side: Side, spot: number, strike: number, sigma: number,
 // Average multiple of the premium paid back when the option finishes in the money:
 // fair value / chance of finishing in the money, after the house edge, capped at the payout cap.
 // About 1.8x at the money; far strikes reach the 20x cap.
-export function winMultiple(side: Side, spot: number, strike: number, sigma: number, T: number): number {
+export function winMultiple(side: Side, spot: number, strike: number, sigma: number, T: number, cap = RULES.payoutCap): number {
   const p = probITM(side, spot, strike, sigma, T);
-  if (!(p > 0)) return RULES.payoutCap;
-  return Math.min(RULES.payoutCap, 1 / ((1 + RULES.baseEdge) * p));
+  if (!(p > 0)) return cap;
+  return Math.min(cap, 1 / ((1 + RULES.baseEdge) * p));
 }
 
 // What an open position is worth right now as a multiple of its premium (fair value, capped like the payout).
 export function liveMultiple(
-  pos: { side: Side; strike: number; units: number; premium: number; expiry: number },
+  pos: { side: Side; strike: number; units: number; premium: number; expiry: number; payoutCap?: number },
   spot: number,
   sigma: number,
   nowMs: number,
 ): number {
-  const value = Math.min(bsPrice(pos.side, spot, pos.strike, sigma, yearsUntil(pos.expiry, nowMs)) * pos.units, RULES.payoutCap * pos.premium);
+  const cap = pos.payoutCap ?? RULES.payoutCap;
+  const value = Math.min(bsPrice(pos.side, spot, pos.strike, sigma, yearsUntil(pos.expiry, nowMs)) * pos.units, cap * pos.premium);
   return pos.premium > 0 ? value / pos.premium : 0;
 }

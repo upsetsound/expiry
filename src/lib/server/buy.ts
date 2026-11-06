@@ -1,6 +1,6 @@
 // Validation and pricing for POST /api/buy, kept free of I/O so it can be tested directly.
 import { ASSETS, TICK, type Asset } from "@/lib/prices";
-import { MAX_STRIKE_STEPS, RULES, priceTicket, strikeStep, winMultiple, type Side } from "@/lib/pricing";
+import { DEFAULT_LIMITS, MAX_EM_OUT, RULES, priceTicket, strikeStep, winMultiple, type Limits, type Side } from "@/lib/pricing";
 import { TENORS, TENOR_LIST, nextExpiry, type Tenor } from "@/lib/schedule";
 
 export type BuyInput = {
@@ -59,12 +59,12 @@ export function parseBuy(body: unknown): BuyInput | null {
 
 // Price the trade on the server's own spot, sigma and clock, and check everything that doesn't need the database.
 // Balance, per-expiry, pool-liability, rate-limit and points rules run inside buy_position() under row locks.
-export function prepareBuy(input: BuyInput, market: { spot: number; sigma: number }, now: number): Prepared {
+export function prepareBuy(input: BuyInput, market: { spot: number; sigma: number }, now: number, limits: Limits = DEFAULT_LIMITS): Prepared {
   const { asset, side, strike, tenor, expiry, premium } = input;
   const { spot, sigma } = market;
 
   if (premium < RULES.minPremium) return fail(400, "min_premium", `Minimum $${RULES.minPremium}`);
-  if (premium > RULES.maxPremiumPerPosition) return fail(400, "max_per_trade", `Max $${RULES.maxPremiumPerPosition} per trade`);
+  if (premium > limits.maxPerTrade) return fail(400, "max_per_trade", `Max $${limits.maxPerTrade.toLocaleString("en-US")} per trade`);
 
   // Sales cutoff: the only round on sale is the next one whose cutoff hasn't passed, on the server's clock.
   const open = nextExpiry(tenor, now);
@@ -74,7 +74,7 @@ export function prepareBuy(input: BuyInput, market: { spot: number; sigma: numbe
       : fail(400, "bad_expiry", "That round isn't on sale yet");
   }
 
-  const t = priceTicket(side, spot, strike, sigma, expiry, now, premium);
+  const t = priceTicket(side, spot, strike, sigma, expiry, now, premium, limits.payoutCap);
   // Filled at the server's price, whatever the buyer saw: the premium in dollars is fixed, so a move only changes
   // the units (and the win multiple) it buys. slippage = how much dearer than shown (+) or cheaper (-).
   const quote: BuyQuote = {
@@ -83,15 +83,15 @@ export function prepareBuy(input: BuyInput, market: { spot: number; sigma: numbe
     sigma,
     strike,
     expiry,
-    multiple: winMultiple(side, spot, strike, sigma, t.T),
+    multiple: winMultiple(side, spot, strike, sigma, t.T, limits.payoutCap),
     slippage: t.perUnit / input.perUnit - 1,
   };
 
-  // Strikes: at the money plus MAX_STRIKE_STEPS steps either side, on the asset's tick. One extra step of slack
-  // covers the at-the-money strike rolling between the buyer's price and ours.
+  // Strikes: on the asset's tick, at most MAX_EM_OUT expected moves from spot (plus a step of slack for the
+  // price moving between the buyer's screen and ours).
   const step = strikeStep(t.em, TICK[asset]);
   const onTick = Math.abs(strike / TICK[asset] - Math.round(strike / TICK[asset])) < 1e-6;
-  if (!onTick || Math.abs(strike - spot) > (MAX_STRIKE_STEPS + 1) * step) return fail(400, "bad_strike", "Strike is out of range", quote);
+  if (!onTick || Math.abs(strike - spot) > MAX_EM_OUT * t.em + step) return fail(400, "bad_strike", "Strike is out of range", quote);
 
   if (!(t.perUnit > 0) || !(t.units > 0)) return fail(409, "no_value", "This option has no value left", quote);
   // No in-the-money strikes. The at-the-money strike is rounded to a step (up to half a step in the money), and the
@@ -123,8 +123,8 @@ export const DB_ERRORS: Record<string, [number, string]> = {
   no_profile: [403, "Account not found — sign in again"],
   rate_limited: [429, "One buy per second — try again"],
   min_premium: [400, `Minimum $${RULES.minPremium}`],
-  max_per_trade: [400, `Max $${RULES.maxPremiumPerPosition} per trade`],
+  max_per_trade: [400, "Over the per-trade limit"],
   balance: [400, "Not enough balance"],
-  max_per_expiry: [400, `Max $${RULES.maxPremiumPerExpiry} per expiry`],
+  max_per_expiry: [400, "Over the per-round limit"],
   pool_limit: [409, "Pool limit reached"],
 };

@@ -5,6 +5,7 @@ import type { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
 import { type AccountApi, type AssetStats, type LeaderRow, type Notify, type PoolState, type Prizes, type ServerVol, type TapeItem, type Trader } from "./account";
 import type { Asset } from "./feeds";
 import { supabaseBrowser } from "./supabase/client";
+import { DEFAULT_LIMITS, type Limits } from "./pricing";
 import { START_POOL, TOP_UP_BELOW, WEEK_MS, type Position } from "./store";
 
 type Row = {
@@ -18,6 +19,7 @@ type Row = {
   premium: number | string;
   units: number;
   max_payout: number | string;
+  payout_cap: number | string;
   spot_at_buy: number;
   status: "open" | "settled";
   settle_price: number | null;
@@ -27,7 +29,7 @@ type Row = {
 };
 type Me = { id: string; x_handle: string | null; avatar_url: string | null; balance: number; points: number; last_top_up: string };
 
-const COLS = "id,user_id,asset,side,strike,tenor,expiry,premium,units,max_payout,spot_at_buy,status,settle_price,payout,created_at,settled_at";
+const COLS = "id,user_id,asset,side,strike,tenor,expiry,premium,units,max_payout,payout_cap,spot_at_buy,status,settle_price,payout,created_at,settled_at";
 const TAPE_LEN = 30;
 
 const toPosition = (r: Row): Position & { userId: string; eventAt: number } => ({
@@ -41,6 +43,7 @@ const toPosition = (r: Row): Position & { userId: string; eventAt: number } => (
   premium: Number(r.premium),
   units: Number(r.units),
   maxPayout: Number(r.max_payout),
+  payoutCap: Number(r.payout_cap ?? 20),
   boughtAt: Date.parse(r.created_at),
   spotAtBuy: Number(r.spot_at_buy),
   status: r.status,
@@ -68,6 +71,7 @@ export function useLiveAccount(notify: Notify): AccountApi {
   const [board, setBoard] = useState<LeaderRow[] | null>(null);
   const [vol, setVol] = useState<Record<Asset, ServerVol> | null>(null);
   const [prizes, setPrizes] = useState<Prizes | null>(null);
+  const [limits, setLimits] = useState<Limits>(DEFAULT_LIMITS);
   const userRef = useRef<string | null>(null);
   const notifyRef = useRef(notify);
   notifyRef.current = notify;
@@ -115,8 +119,11 @@ export function useLiveAccount(notify: Notify): AccountApi {
   }, [sb]);
 
   const loadPrizes = useCallback(async () => {
-    const { data } = await sb.from("settings").select("prizes_enabled,prize_amounts,prize_min_trades").maybeSingle();
-    if (data) setPrizes({ enabled: !!data.prizes_enabled, amounts: (data.prize_amounts ?? []).map(Number), minTrades: Number(data.prize_min_trades) });
+    const { data } = await sb.from("settings").select("*").maybeSingle();
+    if (!data) return;
+    setPrizes({ enabled: !!data.prizes_enabled, amounts: (data.prize_amounts ?? []).map(Number), minTrades: Number(data.prize_min_trades) });
+    if (data.max_premium_per_trade)
+      setLimits({ maxPerTrade: Number(data.max_premium_per_trade), maxPerRound: Number(data.max_premium_per_round), payoutCap: Number(data.payout_cap) });
   }, [sb]);
 
   const loadBoard = useCallback(async () => {
@@ -267,6 +274,7 @@ export function useLiveAccount(notify: Notify): AccountApi {
     leaderboard: board,
     vol,
     prizes,
+    limits,
     async buy(r) {
       if (!signedIn) return { ok: false, message: "Sign in with X to trade" };
       const res = await fetch("/api/buy", {
