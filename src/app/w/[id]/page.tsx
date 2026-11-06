@@ -1,41 +1,34 @@
-// Public page for one win, linked from "Share on X". The OG image next to this file makes the post show the win.
+// Public page for one settled or closed trade, linked from "Share on X". Its OG image is the share card with the
+// sharer's background (?bg=) and time zone (?tz=).
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getWin, winDetail, winHeadline } from "@/lib/server/win";
+import { safeTz, tradeCard } from "@/lib/server/card";
 import { TAGLINE } from "@/lib/site";
 
-type Props = { params: Promise<{ id: string }> };
+type Props = { params: Promise<{ id: string }>; searchParams: Promise<{ tz?: string; bg?: string }> };
+const imageUrl = (id: string, sp: { tz?: string; bg?: string }) =>
+  `/api/card/trade/${id}?tz=${encodeURIComponent(safeTz(sp.tz))}&bg=${encodeURIComponent(sp.bg ?? "purple")}`;
 
-export async function generateMetadata({ params }: Props): Promise<Metadata> {
-  const w = await getWin((await params).id);
-  if (!w) return { title: "Expiry" };
-  const title = `${winHeadline(w)} on a ${winDetail(w)}`;
-  return { title: `${title} · Expiry`, description: TAGLINE, openGraph: { title, description: TAGLINE }, twitter: { card: "summary_large_image", title, description: TAGLINE } };
+export async function generateMetadata({ params, searchParams }: Props): Promise<Metadata> {
+  const [{ id }, sp] = await Promise.all([params, searchParams]);
+  const r = await tradeCard(id, safeTz(sp.tz));
+  if (!r) return { title: "Expiry" };
+  const title = `${r.card.pnl} · ${r.card.pill?.text ?? ""} on Expiry`;
+  const images = [{ url: imageUrl(id, sp), width: 1200, height: 670 }];
+  return { title, description: TAGLINE, openGraph: { title, description: TAGLINE, images }, twitter: { card: "summary_large_image", title, description: TAGLINE, images } };
 }
 
-export default async function WinPage({ params }: Props) {
-  const w = await getWin((await params).id);
-  if (!w) notFound();
-  const dec = w.asset === "BTC" ? 0 : 2;
+export default async function TradePage({ params, searchParams }: Props) {
+  const [{ id }, sp] = await Promise.all([params, searchParams]);
+  if (!(await tradeCard(id, safeTz(sp.tz)))) notFound();
   return (
     <main className="win-page">
-      <div className="wincard static">
-        <div className="win-pnl">+{w.payout.toLocaleString("en-US", { style: "currency", currency: "USD" })}</div>
-        <div className="win-mult">{w.multiple < 10 ? w.multiple.toFixed(1) : Math.round(w.multiple)}×</div>
-        <div className="win-meta">
-          <span>{winDetail(w)}</span>
-          <span>
-            {w.asset} {w.strike.toLocaleString("en-US", { maximumFractionDigits: 1 })} {w.side} · settled at{" "}
-            {w.settle.toLocaleString("en-US", { minimumFractionDigits: dec, maximumFractionDigits: dec })}
-          </span>
-        </div>
-        <div className="win-actions">
-          <Link href="/" className="win-share">
-            Trade
-          </Link>
-        </div>
-      </div>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img className="card-img" src={imageUrl(id, sp)} width={1200} height={670} alt="Trade result card" />
+      <Link href="/" className="buy call card-trade">
+        Trade on Expiry
+      </Link>
       <p className="muted small">{TAGLINE} · paper money</p>
     </main>
   );
