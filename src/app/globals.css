@@ -279,3 +279,7 @@ h2 { font-size: 13px; margin: 28px 0 8px; font-weight: 600; color: var(--muted);
   /* Wide tables (leaderboard, portfolio, admin) scroll inside themselves instead of widening the page. */
   .page .tbl { display: block; overflow-x: auto; max-width: 100%; }
 }
+
+/* Toasts wrap instead of running off-screen (long error messages, phones). */
+.toast { white-space: normal; max-width: min(520px, calc(100vw - 32px)); width: max-content; text-align: center; line-height: 1.4; }
+@media (max-width: 980px) { @keyframes rise { from { opacity: 0; transform: translate(-50%, 6px); } } }

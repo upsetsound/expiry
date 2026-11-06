@@ -135,7 +135,7 @@ function useToast() {
   const say: Notify = useCallback((text, tone = "info") => {
     setToast({ text, tone });
     if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(() => setToast(null), 3500);
+    timer.current = setTimeout(() => setToast(null), tone === "neg" ? 6000 : 3500);
   }, []);
   return { toast, say };
 }

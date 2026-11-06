@@ -29,8 +29,16 @@ export async function POST(request: Request) {
     return NextResponse.json({ error, message, quote }, { status });
   }
 
-  const { data, error } = await supabaseAdmin().rpc("buy_position", { p_user: userId, ...prepared.rpc });
-  if (error) return NextResponse.json({ error: "db", message: error.message }, { status: 500 });
+  let data, error;
+  try {
+    ({ data, error } = await supabaseAdmin().rpc("buy_position", { p_user: userId, ...prepared.rpc }));
+  } catch (e) {
+    error = { message: e instanceof Error ? e.message : String(e) };
+  }
+  if (error) {
+    console.error("buy_position failed", { userId, message: error.message });
+    return NextResponse.json({ error: "server", message: "Something went wrong on our side. You weren't charged. Try again." }, { status: 500 });
+  }
   if (data?.error) {
     const [status, message] = DB_ERRORS[data.error] ?? [400, data.error];
     return NextResponse.json({ error: data.error, message, quote: prepared.quote }, { status });

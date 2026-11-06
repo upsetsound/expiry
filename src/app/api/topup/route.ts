@@ -13,8 +13,16 @@ const MESSAGES: Record<string, string> = {
 export async function POST() {
   const userId = await currentUserId();
   if (!userId) return NextResponse.json({ error: "signed_out", message: "Sign in with X first" }, { status: 401 });
-  const { data, error } = await supabaseAdmin().rpc("topup", { p_user: userId });
-  if (error) return NextResponse.json({ error: "db", message: error.message }, { status: 500 });
+  let data, error;
+  try {
+    ({ data, error } = await supabaseAdmin().rpc("topup", { p_user: userId }));
+  } catch (e) {
+    error = { message: e instanceof Error ? e.message : String(e) };
+  }
+  if (error) {
+    console.error("topup failed", { userId, message: error.message });
+    return NextResponse.json({ error: "server", message: "Something went wrong on our side. Try again." }, { status: 500 });
+  }
   if (data?.error) return NextResponse.json({ ...data, message: MESSAGES[data.error] ?? data.error }, { status: 400 });
   return NextResponse.json(data);
 }
