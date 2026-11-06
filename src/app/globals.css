@@ -250,3 +250,10 @@ h2 { font-size: 13px; margin: 28px 0 8px; font-weight: 600; color: var(--muted);
 .win-page { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 16px; padding: 16px; }
 .wincard.static { cursor: default; animation: none; }
 .win-actions a.win-share { display: inline-flex; align-items: center; height: 34px; padding: 0 18px; border-radius: 8px; font-size: 13px; font-weight: 600; text-decoration: none; }
+
+/* Admin */
+.admin h2 { margin-top: 28px; }
+.admin .tbl { margin-top: 8px; }
+.admin-chart { margin: 8px 0 0; padding: 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
+.admin-chart svg { display: block; width: 100%; height: auto; }
+.admin-chart figcaption { margin-top: 8px; }
