@@ -91,6 +91,17 @@ function useIntro() {
   return { show, dismiss };
 }
 
+// Time until the weekly reset (Monday 00:00 UTC), e.g. "3d 4h" or "5h 12m".
+function untilReset(now: number): string {
+  const d = new Date(now);
+  const days = (8 - d.getUTCDay()) % 7 || 7;
+  const next = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + days);
+  const mins = Math.max(0, Math.floor((next - now) / 60_000));
+  const dd = Math.floor(mins / 1440);
+  const hh = Math.floor((mins % 1440) / 60);
+  return dd > 0 ? `${dd}d ${hh}h` : `${hh}h ${mins % 60}m`;
+}
+
 function Coin({ asset, small = false }: { asset: Asset; small?: boolean }) {
   return (
     <span className={`coin ${small ? "sm" : ""}`} aria-hidden="true">
@@ -409,7 +420,19 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   );
 
   const board = account.leaderboard;
-  const leaderboard = !live ? (
+  const prizes = account.prizes;
+  const prizeLine = prizes?.enabled
+    ? `This week: ${prizes.amounts.map((a) => usd(a, 0)).join(" / ")} in USDC to the top ${prizes.amounts.length} by P/L · min ${prizes.minTrades} trades · resets in ${untilReset(now)}`
+    : `Prizes coming soon · leaderboard resets in ${untilReset(now)}`;
+  const banner = live && (
+    <div className={`prize-banner ${prizes?.enabled ? "on" : ""}`}>
+      <span>{prizeLine}</span>
+      <span className="muted">
+        Free to enter · paper money · <a href="/rules">Rules</a>
+      </span>
+    </div>
+  );
+  const boardBody = !live ? (
     <div className="empty">
       <p>The leaderboard goes live with accounts.</p>
       <p className="muted">
@@ -442,6 +465,8 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
             <td>{r.rank}</td>
             <td>
               <Who trader={{ id: r.userId, handle: r.handle, avatar: r.avatar }} />
+              {prizes?.enabled && r.prize !== null && <span className="prize-tag">{usd(r.prize, 0)}</span>}
+              {prizes?.enabled && !r.eligible && <span className="muted small not-eligible">not eligible yet</span>}
             </td>
             <td className={r.pnl >= 0 ? "pos" : "neg"}>{signed(r.pnl, (x) => usd(x))}</td>
             <td>{num(r.trades)}</td>
@@ -452,6 +477,12 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
         ))}
       </tbody>
     </table>
+  );
+  const leaderboard = (
+    <>
+      {banner}
+      {boardBody}
+    </>
   );
 
   const statusList = (

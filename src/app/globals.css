@@ -236,3 +236,12 @@ h2 { font-size: 13px; margin: 28px 0 8px; font-weight: 600; color: var(--muted);
 .intro-x { float: right; margin: -3px -4px 0 6px; width: 20px; height: 20px; border-radius: 4px; color: var(--muted); font-size: 16px; line-height: 1; }
 .intro-x:hover { color: var(--text); background: rgba(234, 244, 241, 0.06); }
 .intro-signin { align-self: flex-start; height: 28px; padding: 0 10px; border-radius: 6px; background: var(--text); color: var(--bg); font-size: 12.5px; font-weight: 600; }
+
+/* Weekly prizes */
+.prize-banner { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 16px; margin: 12px 0 4px; padding: 9px 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); font-size: 12.5px; }
+.prize-banner.on { border-color: rgba(143, 245, 210, 0.3); background: rgba(143, 245, 210, 0.05); }
+.prize-banner a { color: var(--text); text-decoration: underline; text-underline-offset: 2px; }
+.prize-tag { margin-left: 8px; padding: 1px 6px; border-radius: 4px; background: rgba(143, 245, 210, 0.12); color: var(--mint); font-size: 11px; font-weight: 600; }
+.not-eligible { margin-left: 8px; }
+.rules ol { display: flex; flex-direction: column; gap: 10px; padding-left: 20px; max-width: 680px; line-height: 1.6; }
+.rules a { color: var(--text); }

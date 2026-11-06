@@ -25,7 +25,10 @@ export type LeaderRow = {
   bestMultiple: number;
   points: number;
   isMe: boolean;
+  eligible: boolean;
+  prize: number | null; // USDC, only while prizes are on
 };
+export type Prizes = { enabled: boolean; amounts: number[]; minTrades: number };
 export type Notify = (text: string, tone?: "pos" | "neg" | "info") => void;
 
 export type BuyRequest = {
@@ -57,6 +60,7 @@ export type AccountApi = {
   stats: Record<Asset, AssetStats> | null; // global (live only); demo computes from its own positions
   leaderboard: LeaderRow[] | null; // live only
   vol: Record<Asset, ServerVol> | null; // live: the server's pricing vol, so shown quotes match /api/buy
+  prizes: Prizes | null; // live: weekly prize settings from the settings row
   buy: (r: BuyRequest) => Promise<BuyResult>;
   topUp: () => Promise<void>;
   reset?: () => void;
@@ -135,6 +139,7 @@ export function useLocalAccount(market: MarketState): AccountApi {
     stats: null,
     leaderboard: null,
     vol: null,
+    prizes: null,
     async buy(r) {
       if (!acct) return { ok: false, message: "Loading…" };
       const key = `${r.asset}-${r.expiry}`;

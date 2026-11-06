@@ -271,6 +271,44 @@ describe.skipIf(!local)("database (local Supabase)", () => {
       expect(data?.[1]).toMatchObject({ rank: 2, pnl: -5, trades: 2, wins: 1, win_rate: 0.5 });
     });
 
+    it("breaks P/L ties by trade count and flags prize eligibility", async () => {
+      // tester7: +20 over 1 trade. tester8: +20 over 3 trades (ranks first on the tie). tester9: +5 over 2 trades.
+      const ins = (u: string, premium: number, payout: number) =>
+        q(
+          `insert into public.positions (user_id, asset, side, strike, tenor, expiry, window_ms, premium, units, max_payout, spot_at_buy, sigma, status, settle_price, payout, settled_at)
+           values ($1,'BTC','call',76000,'1m',now(),5000,$2,1,200,76000,0.4,'settled',76100,$3,now())`,
+          [u, premium, payout],
+        );
+      await ins(users[7], 10, 30);
+      await ins(users[8], 10, 20);
+      await ins(users[8], 10, 20);
+      await ins(users[8], 10, 10);
+      await ins(users[9], 10, 15);
+      await ins(users[9], 10, 10);
+      await q("update public.settings set prizes_enabled = false, prize_min_trades = 2, prize_amounts = '{100,50,25}'");
+      let { data } = await anon.rpc("leaderboard");
+      expect(data.map((r: { x_handle: string; rank: number }) => `${r.rank}:${r.x_handle}`)).toEqual(["1:tester8", "2:tester7", "3:tester9"]);
+      expect(data.map((r: { eligible: boolean }) => r.eligible)).toEqual([true, false, true]);
+      expect(data.every((r: { prize: number | null }) => r.prize === null)).toBe(true); // prizes off
+
+      await q("update public.settings set prizes_enabled = true");
+      ({ data } = await anon.rpc("leaderboard"));
+      // Places go to eligible traders in rank order: tester8 1st, tester9 2nd; tester7 is ranked but not eligible.
+      expect(data.map((r: { x_handle: string; prize_place: number | null; prize: number | null }) => [r.x_handle, r.prize_place, r.prize])).toEqual([
+        ["tester8", 1, 100],
+        ["tester7", null, null],
+        ["tester9", 2, 50],
+      ]);
+      await q("update public.settings set prizes_enabled = false, prize_min_trades = 20");
+    });
+
+    it("lets anyone read settings but nobody write them from the client", async () => {
+      expect((await anon.from("settings").select("prizes_enabled").single()).data?.prizes_enabled).toBe(false);
+      expect((await anon.from("settings").update({ prizes_enabled: true }).eq("id", true)).error).not.toBeNull();
+      const [row] = await q<{ prizes_enabled: boolean }>("select prizes_enabled from public.settings");
+      expect(row.prizes_enabled).toBe(false);
+    });
+
     it("tops up only below $1,000 and once a week", async () => {
       await q("update public.profiles set balance = 500, last_top_up = now() - interval '8 days' where id = $1", [users[9]]);
       expect((await admin.rpc("topup", { p_user: users[9] })).data).toMatchObject({ ok: true, balance: 10500 });

@@ -2,7 +2,7 @@
 // Supabase-backed account: X sign-in, the shared pool, everyone's trades over Realtime, server-side buys/settlement.
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
-import { type AccountApi, type AssetStats, type LeaderRow, type Notify, type PoolState, type ServerVol, type TapeItem, type Trader } from "./account";
+import { type AccountApi, type AssetStats, type LeaderRow, type Notify, type PoolState, type Prizes, type ServerVol, type TapeItem, type Trader } from "./account";
 import type { Asset } from "./feeds";
 import { supabaseBrowser } from "./supabase/client";
 import { START_POOL, TOP_UP_BELOW, WEEK_MS, type Position } from "./store";
@@ -67,6 +67,7 @@ export function useLiveAccount(notify: Notify): AccountApi {
   const [stats, setStats] = useState<Record<Asset, AssetStats> | null>(null);
   const [board, setBoard] = useState<LeaderRow[] | null>(null);
   const [vol, setVol] = useState<Record<Asset, ServerVol> | null>(null);
+  const [prizes, setPrizes] = useState<Prizes | null>(null);
   const userRef = useRef<string | null>(null);
   const notifyRef = useRef(notify);
   notifyRef.current = notify;
@@ -113,6 +114,11 @@ export function useLiveAccount(notify: Notify): AccountApi {
     setStats({ BTC: f(b.data), ETH: f(e.data) });
   }, [sb]);
 
+  const loadPrizes = useCallback(async () => {
+    const { data } = await sb.from("settings").select("prizes_enabled,prize_amounts,prize_min_trades").maybeSingle();
+    if (data) setPrizes({ enabled: !!data.prizes_enabled, amounts: (data.prize_amounts ?? []).map(Number), minTrades: Number(data.prize_min_trades) });
+  }, [sb]);
+
   const loadBoard = useCallback(async () => {
     const { data } = await sb.rpc("leaderboard");
     if (!data) return;
@@ -128,6 +134,8 @@ export function useLiveAccount(notify: Notify): AccountApi {
         bestMultiple: Number(r.best_multiple),
         points: Number(r.points),
         isMe: !!r.is_me,
+        eligible: r.eligible === undefined ? true : !!r.eligible,
+        prize: r.prize === null || r.prize === undefined ? null : Number(r.prize),
       })),
     );
   }, [sb]);
@@ -146,12 +154,14 @@ export function useLiveAccount(notify: Notify): AccountApi {
     })();
     loadStats();
     loadBoard();
+    loadPrizes();
     const id = setInterval(() => {
       loadStats();
       loadBoard();
+      loadPrizes();
     }, 30_000);
     return () => clearInterval(id);
-  }, [sb, loadStats, loadBoard]);
+  }, [sb, loadStats, loadBoard, loadPrizes]);
 
   // My account and positions.
   useEffect(() => {
@@ -256,6 +266,7 @@ export function useLiveAccount(notify: Notify): AccountApi {
     stats,
     leaderboard: board,
     vol,
+    prizes,
     async buy(r) {
       if (!signedIn) return { ok: false, message: "Sign in with X to trade" };
       const res = await fetch("/api/buy", {
