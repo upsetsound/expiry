@@ -24,9 +24,8 @@ export default function Privacy() {
       <h2>What we collect</h2>
       <ul>
         <li>
-          <strong>From sign-in.</strong> What X or Google sends when you sign in, kept with your login: for X, your username, display name, profile
-          picture link, account ID and email if X shares it; for Google, your email, name, profile photo link and account ID. Google players pick a
-          username, and their Google name and photo are never shown in the game.
+          <strong>From sign-in.</strong> What X sends when you sign in, kept with your login: your username, display name, profile picture link,
+          account ID and email if X shares it.
         </li>
         <li>
           <strong>Your game activity.</strong> Your paper balance, points, trades (what you bought, when, and the result) and the username you picked.
@@ -43,7 +42,7 @@ export default function Privacy() {
 
       <h2>What&apos;s public</h2>
       <p>
-        Your X username or Expiry username, your X profile picture, and your trades and results appear on the leaderboard, the live trades feed and
+        Your X username and profile picture, and your trades and results appear on the leaderboard, the live trades feed and
         share cards. Your email address and balance are never shown to other players.
       </p>
 
@@ -55,8 +54,8 @@ export default function Privacy() {
 
       <h2>Who processes it</h2>
       <p>
-        Supabase (database, sign-in and photo storage) and Vercel (hosting and analytics) store data for us. X and Google handle sign-in under
-        their own privacy policies.
+        Supabase (database, sign-in and photo storage) and Vercel (hosting and analytics) store data for us. X handles sign-in under its own privacy
+        policy.
       </p>
 
       <h2>Cookies and storage</h2>

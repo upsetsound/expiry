@@ -116,7 +116,7 @@ export async function dayCard(handle: string, date: string, tz: string, bg?: str
   const range = dayRange(date, tz);
   if (!range) return null;
   const db = supabaseAdmin();
-  const { data: who } = await db.from("profiles").select("id,x_handle,avatar_url").ilike("x_handle", handle.replace(/[%_]/g, "")).maybeSingle();
+  const { data: who } = await db.from("profiles").select("id,x_handle,avatar_url").ilike("x_handle", handle.replace(/[\\%_]/g, (c) => "\\" + c)).maybeSingle();
   if (!who) return null;
   const [from, to] = [new Date(range[0]).toISOString(), new Date(range[1]).toISOString()];
   const { data: rows } = await db
