@@ -43,3 +43,10 @@ export function formatClock(t: number, seconds = true): string {
     ...(seconds ? { second: "2-digit" } : {}),
   });
 }
+
+// Positions can be closed (sold back to the pool) until the round's settlement window starts: prices inside the
+// window are nearly final, so a close there would pick off a stale bid.
+export function closeDeadline(expiry: number, tenor: Tenor): number {
+  return expiry - TENORS[tenor].window;
+}
+export const canClose = (expiry: number, tenor: Tenor, now: number) => now < closeDeadline(expiry, tenor);

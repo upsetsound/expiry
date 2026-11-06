@@ -178,3 +178,10 @@ export function strikeForMultiple(options: StrikeOption[], target: number): { op
   }
   return { option: best, reachable: max >= target * 0.9, max };
 }
+
+// What the pool pays to buy a position back before expiry: fair value minus the house edge (the ask is fair value
+// plus the edge, so a round trip costs about 2 x baseEdge), never negative, never more than cap x premium.
+export function bid(side: Side, spot: number, strike: number, sigma: number, T: number, units: number, premium: number, cap = RULES.payoutCap): number {
+  const fair = bsPrice(side, spot, strike, sigma, T);
+  return Math.max(0, Math.min(fair * (1 - RULES.baseEdge) * units, cap * premium));
+}
