@@ -25,6 +25,8 @@ export function supabaseAdmin(): SupabaseClient {
   if (!admin) {
     const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
     if (!key) throw new Error("SUPABASE_SERVICE_ROLE_KEY is not set");
+    // Keys go into HTTP headers, which only allow printable ASCII. A pasted comment or space breaks every call.
+    if (!/^[\x21-\x7e]+$/.test(key)) throw new Error("SUPABASE_SERVICE_ROLE_KEY contains spaces or non-ASCII characters (a comment pasted after it?)");
     admin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, key, { auth: { persistSession: false, autoRefreshToken: false } });
   }
   return admin;
