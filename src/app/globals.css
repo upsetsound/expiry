@@ -257,3 +257,23 @@ h2 { font-size: 13px; margin: 28px 0 8px; font-weight: 600; color: var(--muted);
 .admin-chart { margin: 8px 0 0; padding: 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); }
 .admin-chart svg { display: block; width: 100%; height: auto; }
 .admin-chart figcaption { margin-top: 8px; }
+
+/* Phones: no sideways scroll, and every control at least ~36px tall to tap. */
+@media (max-width: 520px) {
+  .brand { margin-right: 6px; }
+  .brand .word { display: none; }
+  .tab { padding: 0 8px; font-size: 13px; }
+  .main { padding-right: 10px; }
+  .pill.stats { width: 100%; }
+  .stat { padding: 0 8px; gap: 6px; }
+  .stat .lbl { letter-spacing: 0.04em; }
+  .mute { width: 36px; height: 36px; }
+  .signin, .intro-signin { height: 36px; }
+  .intro-x { width: 32px; height: 32px; margin: -9px -8px 0 4px; }
+  .ladder button { height: 38px; }
+  .seg button { height: 38px; }
+  .amount button, .amount input { height: 40px; }
+  .stepper button { min-width: 44px; }
+  .stepper { grid-template-columns: 44px 1fr 44px; }
+  .btab { min-height: 40px; }
+}
