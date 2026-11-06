@@ -70,6 +70,7 @@ describe.skipIf(!local)("database (local Supabase)", () => {
     await q("truncate public.positions, public.settlements");
     await q("update public.pool set balance = 250000, premiums_in = 0, paid_out = 0");
     await q("update public.profiles set balance = 10000, points = 0, last_buy_at = null where id = any($1)", [users]);
+    await q("update public.settings set max_premium_per_trade = 1000, max_premium_per_round = 5000, payout_cap = 100");
   });
 
   it("creates a profile with the X handle and avatar on sign-up", async () => {
@@ -132,14 +133,29 @@ describe.skipIf(!local)("database (local Supabase)", () => {
       expect(p.balance).toBe("50.00");
     });
 
-    it("caps premium at $1,000 per user per expiry", async () => {
+    it("caps premium at the settings limit per user per round ($5,000)", async () => {
       const exp = futureExpiry();
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < 5; i++) {
         await q("update public.profiles set last_buy_at = null where id = $1", [users[3]]);
-        expect((await buy(users[3], { p_expiry: exp, p_premium: 250 })).data?.ok).toBe(true);
+        expect((await buy(users[3], { p_expiry: exp, p_premium: 1000, p_max_payout: 1 })).data?.ok).toBe(true);
       }
       await q("update public.profiles set last_buy_at = null where id = $1", [users[3]]);
-      expect((await buy(users[3], { p_expiry: exp, p_premium: 1 })).data?.error).toBe("max_per_expiry");
+      expect((await buy(users[3], { p_expiry: exp, p_premium: 1 })).data).toMatchObject({ error: "max_per_expiry", limit: 5000 });
+    });
+
+    it("enforces the per-trade limit from settings, whatever the caller sends", async () => {
+      expect((await buy(users[4], { p_premium: 1000.01 })).data).toMatchObject({ error: "max_per_trade", limit: 1000 });
+      await q("update public.settings set max_premium_per_trade = 50");
+      expect((await buy(users[4], { p_premium: 60 })).data).toMatchObject({ error: "max_per_trade", limit: 50 });
+      expect((await buy(users[4], { p_premium: 50 })).data?.ok).toBe(true);
+    });
+
+    it("stores the payout cap from settings on each position and caps max payout with it", async () => {
+      const r = await buy(users[5], { p_premium: 10, p_max_payout: 5000 });
+      expect(r.data?.position).toMatchObject({ payout_cap: 100, max_payout: 1000 });
+      await q("update public.settings set payout_cap = 30");
+      await q("update public.profiles set last_buy_at = null where id = $1", [users[5]]);
+      expect((await buy(users[5], { p_premium: 10, p_max_payout: 5000 })).data?.position).toMatchObject({ payout_cap: 30, max_payout: 300 });
     });
 
     it("holds the 30% per-side pool limit under 10 concurrent buyers", async () => {
@@ -242,17 +258,35 @@ describe.skipIf(!local)("database (local Supabase)", () => {
     });
 
     it("computes payouts in SQL exactly like pricing.ts", async () => {
-      const cases: [string, number, number, number, number][] = [
-        ["call", 76_100, 76_000, 0.37, 12.5],
-        ["call", 75_000, 76_000, 2, 50],
-        ["put", 75_500, 76_000, 0.2, 3],
-        ["put", 70_000, 76_000, 1, 10],
-        ["call", 3_500.5, 3_400, 0.123456, 7.77],
+      const cases: [string, number, number, number, number, number][] = [
+        ["call", 76_100, 76_000, 0.37, 12.5, 100],
+        ["call", 75_000, 76_000, 2, 50, 100],
+        ["put", 75_500, 76_000, 0.2, 3, 100],
+        ["put", 70_000, 76_000, 1, 10, 100],
+        ["put", 70_000, 76_000, 1, 10, 20],
+        ["call", 3_500.5, 3_400, 0.123456, 7.77, 100],
+        ["call", 90_000, 76_000, 2, 10, 100],
       ];
-      for (const [side, settleP, strike, units, premium] of cases) {
-        const [r] = await q<{ v: string }>("select public.position_payout($1, $2, $3, $4, $5) v", [side, settleP, strike, units, premium]);
-        expect(Number(r.v)).toBeCloseTo(Math.round(payoutTs(side as "call" | "put", settleP, strike, units, premium) * 100) / 100, 2);
+      for (const [side, settleP, strike, units, premium, cap] of cases) {
+        const [r] = await q<{ v: string }>("select public.position_payout($1, $2, $3, $4, $5, $6) v", [side, settleP, strike, units, premium, cap]);
+        expect(Number(r.v)).toBeCloseTo(Math.round(payoutTs(side as "call" | "put", settleP, strike, units, premium, cap) * 100) / 100, 2);
       }
+    });
+
+    it("settles a 100x position in the money at no more than 100x premium, and old positions at their own cap", async () => {
+      const exp = new Date(Math.floor((Date.now() - 120_000) / 60_000) * 60_000).toISOString();
+      // Deep in the money: intrinsic x units would pay far more than either cap.
+      await q(
+        `insert into public.positions (user_id, asset, side, strike, tenor, expiry, window_ms, premium, units, max_payout, spot_at_buy, sigma, payout_cap)
+         values ($1,'BTC','call',76000,'1m',$3,5000,10,1,1000,76000,0.4,100),
+                ($2,'BTC','call',76000,'1m',$3,5000,10,1,200,76000,0.4,20)`,
+        [users[6], users[7], exp],
+      );
+      await admin.rpc("settle_round", { p_asset: "BTC", p_tenor: "1m", p_expiry: exp, p_price: 90_000, p_window_ms: 5000, p_source: "test" });
+      const rows = await q<{ user_id: string; payout: string }>("select user_id, payout from public.positions order by payout_cap desc");
+      expect(rows.map((r) => Number(r.payout))).toEqual([1000, 200]);
+      const [me] = await q<{ balance: string }>("select balance from public.profiles where id = $1", [users[6]]);
+      expect(Number(me.balance)).toBe(11000);
     });
   });
 
