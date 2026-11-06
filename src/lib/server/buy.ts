@@ -1,6 +1,6 @@
 // Validation and pricing for POST /api/buy, kept free of I/O so it can be tested directly.
 import { ASSETS, TICK, type Asset } from "@/lib/prices";
-import { MAX_STRIKE_STEPS, QUOTE_TOLERANCE, RULES, priceTicket, strikeStep, type Side } from "@/lib/pricing";
+import { MAX_STRIKE_STEPS, RULES, priceTicket, strikeStep, winMultiple, type Side } from "@/lib/pricing";
 import { TENORS, TENOR_LIST, nextExpiry, type Tenor } from "@/lib/schedule";
 
 export type BuyInput = {
@@ -13,7 +13,7 @@ export type BuyInput = {
   perUnit: number; // premium per unit the buyer was shown
 };
 
-export type BuyQuote = { perUnit: number; spot: number; sigma: number; strike: number; expiry: number };
+export type BuyQuote = { perUnit: number; spot: number; sigma: number; strike: number; expiry: number; multiple: number; slippage: number };
 
 export type Prepared =
   | { ok: false; status: number; error: string; message: string; quote?: BuyQuote }
@@ -75,7 +75,17 @@ export function prepareBuy(input: BuyInput, market: { spot: number; sigma: numbe
   }
 
   const t = priceTicket(side, spot, strike, sigma, expiry, now, premium);
-  const quote: BuyQuote = { perUnit: t.perUnit, spot, sigma, strike, expiry };
+  // Filled at the server's price, whatever the buyer saw: the premium in dollars is fixed, so a move only changes
+  // the units (and the win multiple) it buys. slippage = how much dearer than shown (+) or cheaper (-).
+  const quote: BuyQuote = {
+    perUnit: t.perUnit,
+    spot,
+    sigma,
+    strike,
+    expiry,
+    multiple: winMultiple(side, spot, strike, sigma, t.T),
+    slippage: t.perUnit / input.perUnit - 1,
+  };
 
   // Strikes: at the money plus MAX_STRIKE_STEPS steps either side, on the asset's tick. One extra step of slack
   // covers the at-the-money strike rolling between the buyer's price and ours.
@@ -84,12 +94,10 @@ export function prepareBuy(input: BuyInput, market: { spot: number; sigma: numbe
   if (!onTick || Math.abs(strike - spot) > (MAX_STRIKE_STEPS + 1) * step) return fail(400, "bad_strike", "Strike is out of range", quote);
 
   if (!(t.perUnit > 0) || !(t.units > 0)) return fail(409, "no_value", "This option has no value left", quote);
-  // One-sided slippage: reject only if the buyer would pay more than shown + 2%. Cheaper fills at the server price.
-  if (t.perUnit / input.perUnit - 1 > QUOTE_TOLERANCE) return fail(409, "price_moved", "Price moved, try again", quote);
-  // Checked after the price so a market jump reads as "Price moved". No in-the-money strikes (their win multiple is under 1.8x). The at-the-money strike is rounded to a step, so
-  // it can sit up to half a step in the money; allow 0.75 step to cover the buyer's and our spot differing.
+  // No in-the-money strikes. The at-the-money strike is rounded to a step (up to half a step in the money), and the
+  // market can move between the buyer's screen and ours, so allow 1.5 steps before calling it in the money.
   const itm = side === "call" ? spot - strike : strike - spot;
-  if (itm > 0.75 * step) return fail(400, "itm_strike", "In-the-money strikes aren't offered", quote);
+  if (itm > 1.5 * step) return fail(400, "itm_strike", "In-the-money strikes aren't offered", quote);
 
   return {
     ok: true,

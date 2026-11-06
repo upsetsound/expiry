@@ -43,7 +43,7 @@ export type BuyRequest = {
   units: number;
   maxPayout: number;
 };
-export type BuyResult = { ok: true; pointsAwarded: number } | { ok: false; message: string; priceMoved?: boolean };
+export type BuyResult = { ok: true; pointsAwarded: number; multiple?: number } | { ok: false; message: string };
 
 export type AccountApi = {
   mode: "demo" | "live";

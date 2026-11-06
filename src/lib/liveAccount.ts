@@ -277,13 +277,13 @@ export function useLiveAccount(notify: Notify): AccountApi {
       const body = await res?.json().catch(() => null);
       if (!res || !res.ok || !body?.ok) {
         if (res?.status === 401) setUserId(null);
-        return { ok: false, message: body?.message ?? "Couldn't reach the server — try again", priceMoved: body?.error === "price_moved" };
+        return { ok: false, message: body?.message ?? "Couldn't reach the server. Try again." };
       }
       const p = toPosition(body.position as Row);
       setMine((list) => upsert(list, p));
       setOpen((list) => upsert(list, p));
       setMe((m) => (m ? { ...m, balance: Number(body.balance), points: Number(body.points) } : m));
-      return { ok: true, pointsAwarded: Number(body.points_awarded ?? 0) };
+      return { ok: true, pointsAwarded: Number(body.points_awarded ?? 0), multiple: Number(body.quote?.multiple) || undefined };
     },
     async topUp() {
       const res = await fetch("/api/topup", { method: "POST" });

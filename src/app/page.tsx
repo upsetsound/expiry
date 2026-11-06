@@ -269,7 +269,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
     setBuying(true);
     const r = await account.buy({ asset, side, strike, tenor, expiry, premium: amt, perUnit: ticket.perUnit, spot, units: ticket.units, maxPayout: ticket.mp });
     setBuying(false);
-    if (r.ok) say(`Bought ${asset} ${num(strike)} ${side} · ${usd(amt)}${r.pointsAwarded ? ` · +${r.pointsAwarded} pts` : ""}`);
+    if (r.ok) say(`Bought ${asset} ${num(strike)} ${side} · ${usd(amt)} · win ≈ ${mult(r.multiple ?? ticket.multiple)}${r.pointsAwarded ? ` · +${r.pointsAwarded} pts` : ""}`);
     else say(r.message, "neg");
   }
 

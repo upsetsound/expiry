@@ -90,9 +90,6 @@ export function maxPayout(side: Side, spot: number, strike: number, units: numbe
 
 // Strikes offered: at-the-money plus up to this many steps either side.
 export const MAX_STRIKE_STEPS = 4;
-// A buy is rejected if the server's premium per unit is more than this much ABOVE the one the buyer was shown.
-// A lower server price is fine: the buyer gets it (more units for the same premium).
-export const QUOTE_TOLERANCE = 0.02;
 
 // Strike step: a round number near half an expected move, at least one tick.
 export function strikeStep(em: number, tick: number): number {

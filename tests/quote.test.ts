@@ -1,6 +1,6 @@
 // Client and server price a ticket the same way, and stale quotes are rejected.
 import { describe, expect, it } from "vitest";
-import { QUOTE_TOLERANCE, RULES, payout, priceTicket, strikeStep } from "@/lib/pricing";
+import { RULES, payout, priceTicket, strikeStep } from "@/lib/pricing";
 import { TICK } from "@/lib/prices";
 import { nextExpiry } from "@/lib/schedule";
 import { parseBuy, prepareBuy, type BuyInput } from "@/lib/server/buy";
@@ -47,32 +47,24 @@ describe("client and server quotes match", () => {
   }
 });
 
-describe("stale quotes", () => {
+describe("fills at the server price, whatever was shown", () => {
   const t = clientTicket("call", "5m", 0, 50);
-  it(`accepts a server price up to ${QUOTE_TOLERANCE * 100}% above the shown quote`, () => {
-    expect(prepareBuy(input(t, "call", "5m", 50, t.perUnit / 1.019), { spot: SPOT, sigma: SIGMA }, NOW).ok).toBe(true);
-  });
-  it("accepts any server price below the shown quote and fills at the server price", () => {
-    for (const k of [1.019, 1.021, 1.5]) {
+  it("fills when the server price is higher or lower than shown, at the server price", () => {
+    for (const k of [0.5, 0.9, 0.98, 1.02, 1.5]) {
       const r = prepareBuy(input(t, "call", "5m", 50, t.perUnit * k), { spot: SPOT, sigma: SIGMA }, NOW);
       expect(r.ok).toBe(true);
-      if (r.ok) expect(r.rpc.p_units).toBe(50 / t.perUnit);
+      if (!r.ok) return;
+      expect(r.rpc.p_premium).toBe(50); // the dollars paid never change
+      expect(r.rpc.p_units).toBe(50 / t.perUnit); // units come from the server's price
+      expect(r.quote.slippage).toBeCloseTo(1 / k - 1, 10);
     }
   });
-  it("rejects a server price more than 2% above the shown quote and returns the new quote", () => {
-    for (const k of [1 / 1.021, 0.9, 0.5]) {
-      const r = prepareBuy(input(t, "call", "5m", 50, t.perUnit * k), { spot: SPOT, sigma: SIGMA }, NOW);
-      expect(r.ok).toBe(false);
-      if (r.ok) return;
-      expect(r.error).toBe("price_moved");
-      expect(r.message).toBe("Price moved, try again");
-      expect(r.quote?.perUnit).toBe(t.perUnit);
+  it("fills when the market moved either way, and reports the multiple received", () => {
+    for (const m of [1.0002, 0.9998]) { // ~$15 either way, a typical move in the second a buy takes
+      const r = prepareBuy(input(t, "call", "5m", 50), { spot: SPOT * m, sigma: SIGMA }, NOW);
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.quote.multiple).toBeGreaterThan(1);
     }
-  });
-  it("rejects when the market moved against the buyer, accepts when it moved for them", () => {
-    const up = prepareBuy(input(t, "call", "5m", 50), { spot: SPOT * 1.002, sigma: SIGMA }, NOW);
-    expect(!up.ok && up.error).toBe("price_moved");
-    expect(prepareBuy(input(t, "call", "5m", 50), { spot: SPOT * 0.998, sigma: SIGMA }, NOW).ok).toBe(true);
   });
 });
 
