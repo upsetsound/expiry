@@ -13,7 +13,7 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
   const [{ handle, date }, sp] = await Promise.all([params, searchParams]);
   const card = await dayCard(decodeURIComponent(handle), date, safeTz(sp.tz));
   if (!card) return { title: "Expiry" };
-  const title = `${card.isX === false ? card.handle : "@" + card.handle}'s day: ${card.pnl} on Expiry`;
+  const title = `@${card.handle}'s day: ${card.pnl} on Expiry`;
   const images = [{ url: imageUrl(handle, date, sp), width: 1200, height: 670 }];
   return { title, description: TAGLINE, openGraph: { title, description: TAGLINE, images }, twitter: { card: "summary_large_image", title, description: TAGLINE, images } };
 }

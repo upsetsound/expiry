@@ -31,7 +31,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   const userId = await currentUserId();
-  if (!userId) return NextResponse.json({ error: "signed_out", message: "Sign in first" }, { status: 401 });
+  if (!userId) return NextResponse.json({ error: "signed_out", message: "Sign in with X first" }, { status: 401 });
   const db = supabaseAdmin();
 
   if ((request.headers.get("content-type") ?? "").includes("application/json")) {

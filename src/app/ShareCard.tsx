@@ -13,7 +13,6 @@ export type CardData = {
   profit: boolean;
   pill: { coin: "₿" | "Ξ" | null; text: string } | null; // "8.4×" or "+3.2%"
   handle: string | null;
-  isX?: boolean; // false for a Google username (shown without "@")
   avatar: string | null;
   site: string;
   photo: string | null; // background photo URL, or null for purple
@@ -101,7 +100,7 @@ export default function ShareCard({ d }: { d: CardData }) {
               <div style={{ display: "flex", width: 56, height: 56, borderRadius: 28, background: BOX }} />
             )}
             <div style={{ display: "flex", fontSize: 28, fontWeight: 600, maxWidth: 640, overflow: "hidden", whiteSpace: "nowrap", textOverflow: "ellipsis", textShadow: shadow }}>
-              {d.handle ? (d.isX === false ? d.handle : "@" + d.handle) : "expiry trader"}
+              {d.handle ? "@" + d.handle : "expiry trader"}
             </div>
           </div>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", textShadow: shadow }}>

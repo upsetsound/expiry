@@ -12,7 +12,7 @@ const MESSAGES: Record<string, string> = {
 
 export async function POST() {
   const userId = await currentUserId();
-  if (!userId) return NextResponse.json({ error: "signed_out", message: "Sign in first" }, { status: 401 });
+  if (!userId) return NextResponse.json({ error: "signed_out", message: "Sign in with X first" }, { status: 401 });
   let data, error;
   try {
     ({ data, error } = await supabaseAdmin().rpc("topup", { p_user: userId }));

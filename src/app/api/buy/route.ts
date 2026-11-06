@@ -10,11 +10,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
   const userId = await currentUserId();
-  if (!userId) return NextResponse.json({ error: "signed_out", message: "Sign in to trade" }, { status: 401 });
-
-  // Every trader needs a public name first: an X handle, or a username picked after Google sign-in.
-  const { data: prof } = await supabaseAdmin().from("profiles").select("x_handle,username").eq("id", userId).maybeSingle();
-  if (!prof?.x_handle && !prof?.username) return NextResponse.json({ error: "no_username", message: "Pick a username to trade" }, { status: 403 });
+  if (!userId) return NextResponse.json({ error: "signed_out", message: "Sign in with X to trade" }, { status: 401 });
 
   const input = parseBuy(await request.json().catch(() => null));
   if (!input) return NextResponse.json({ error: "bad_request", message: "Invalid order" }, { status: 400 });

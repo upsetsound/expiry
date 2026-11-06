@@ -3,9 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Chart from "./Chart";
 import WinCard from "./WinCard";
 import ShareModal, { type ShareTarget } from "./ShareModal";
-import { SignInModal, UsernameModal } from "./SignIn";
 import { ASSETS, TICK, isDemo, useMarket, type Asset, type MarketState } from "@/lib/feeds";
-import { settledToast, traderName, useLocalAccount, type AccountApi, type Notify, type Position, type TapeItem, type Trader } from "@/lib/account";
+import { settledToast, useLocalAccount, type AccountApi, type Notify, type Position, type TapeItem, type Trader } from "@/lib/account";
 import { useRoundResults, type RoundResult } from "@/lib/useRoundResults";
 import { formatMultiple } from "@/lib/share";
 import { sounds, useSound } from "@/lib/sound";
@@ -151,7 +150,7 @@ function Who({ trader, size = 16 }: { trader?: Trader | null; size?: number }) {
           {(handle ?? "?").slice(0, 1).toUpperCase()}
         </span>
       )}
-      <span className="handle">{traderName(trader) ?? "anon"}</span>
+      <span className="handle">{handle ? `@${handle}` : "anon"}</span>
     </span>
   );
 }
@@ -257,8 +256,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
     const balance = account.balance;
     const poolBal = account.pool.balance;
     let block: string | null = null;
-    if (!account.signedIn) block = "Sign in to trade";
-    else if (account.needsUsername) block = "Pick a username to trade";
+    if (!account.signedIn) block = "Sign in with X to trade";
     else if (amt < RULES.minPremium) block = `Minimum ${usd(RULES.minPremium, 0)}`;
     else if (amt > account.limits.maxPerTrade) block = `Max ${usd(account.limits.maxPerTrade, 0)} per trade`;
     else if (spentHere + amt > account.limits.maxPerRound) block = `Max ${usd(account.limits.maxPerRound, 0)} per round`;
@@ -342,8 +340,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   };
 
   async function buy() {
-    if (!account.signedIn) return setSignInOpen(true);
-    if (account.needsUsername) return setUsernameLater(false);
+    if (!account.signedIn) return account.signIn?.();
     if (!ticket || ticket.block || strike === null || !spot || buying) return;
     sounds.click();
     setBuying(true);
@@ -388,8 +385,6 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   const [settled$, setSettled$] = useState<{ asset: Asset; tenor: Tenor; expiry: number; price: number; until: number } | null>(null);
   const [win, setWin] = useState<RoundResult | null>(null);
   const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
-  const [signInOpen, setSignInOpen] = useState(false);
-  const [usernameLater, setUsernameLater] = useState(false);
   const shareDay = () => {
     if (!account.me?.handle) return;
     const d = new Date();
@@ -655,8 +650,8 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
           </button>
           <span className="badge">Paper</span>
           {live && account.ready && !account.signedIn ? (
-            <button className="signin" onClick={() => setSignInOpen(true)}>
-              Sign in
+            <button className="signin" onClick={() => account.signIn?.()}>
+              Sign in with X
             </button>
           ) : (
             <>
@@ -762,8 +757,8 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
                   settles in a minute. You can only lose what you pay.
                 </p>
                 {!account.signedIn && account.ready && (
-                  <button className="intro-signin" onClick={() => setSignInOpen(true)}>
-                    Sign in to trade
+                  <button className="intro-signin" onClick={() => account.signIn?.()}>
+                    Sign in with X to trade
                   </button>
                 )}
               </div>
@@ -969,8 +964,6 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
             </div>
           </section>
           {shareTarget && <ShareModal target={shareTarget} onClose={() => setShareTarget(null)} />}
-          {live && signInOpen && !account.signedIn && <SignInModal onPick={(p) => account.signIn?.(p)} onClose={() => setSignInOpen(false)} />}
-          {live && account.needsUsername && !usernameLater && account.setUsername && <UsernameModal onSave={account.setUsername} onClose={() => setUsernameLater(true)} />}
           {toast && (
             <div className={`toast ${toast.tone}`} role="status">
               {toast.text}
