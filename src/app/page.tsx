@@ -205,8 +205,6 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   // Step = a round number near half an expected move (at least one tick).
   const step = useMemo(() => strikeStep(em, TICK[asset]), [em, asset]);
   // Only at-the-money and out-of-the-money strikes: 0..+4 steps up for calls, 0..-4 down for puts.
-  const minOff = side === "call" ? 0 : -MAX_STRIKE_STEPS;
-  const maxOff = side === "call" ? MAX_STRIKE_STEPS : 0;
   const [strikeOff, setStrikeOff] = useState(0);
   useEffect(() => setStrikeOff(0), [asset]);
   const pickSide = (s: Side) => {
@@ -244,14 +242,25 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   }, [spot, strike, account, side, sigma, T, amt, asset, expiry, now]);
 
   // Strike chips: at the money and four steps out on the chosen side (calls up, puts down), with their multiples.
+  // Strikes past the first one at the 20x cap would only lower the chance with no higher payout, so the
+  // chips (and the stepper) stop there.
   const chips = useMemo(() => {
     if (!spot || atmStrike === null) return [];
-    return [0, 1, 2, 3, 4].map((k) => {
+    const all = Array.from({ length: MAX_STRIKE_STEPS + 1 }, (_, k) => {
       const off = side === "call" ? k : -k;
       const k$ = atmStrike + off * step;
       return { off, strike: k$, multiple: winMultiple(side, spot, k$, sigma, T) };
     });
+    const capped = all.findIndex((c) => c.multiple >= RULES.payoutCap - 1e-9);
+    return capped === -1 ? all : all.slice(0, capped + 1);
   }, [spot, atmStrike, step, side, sigma, T]);
+  const reach = chips.length ? chips.length - 1 : MAX_STRIKE_STEPS;
+  const minOff = side === "call" ? 0 : -reach;
+  const maxOff = side === "call" ? reach : 0;
+  // If the price moves and the cap now comes sooner, pull the selected strike back inside the range.
+  useEffect(() => {
+    setStrikeOff((o) => Math.min(maxOff, Math.max(minOff, o)));
+  }, [minOff, maxOff]);
 
   async function buy() {
     if (!account.signedIn) return account.signIn?.();
