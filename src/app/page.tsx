@@ -590,7 +590,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   );
   const leaderboard = (
     <>
-      {guest && <SavePrompt inline text="You\u2019re playing as a guest. Sign in with X to get on the leaderboard. Your balance and trades come with you." onSave={() => account.signIn?.()} />}
+      {guest && <SavePrompt inline text="You’re playing as a guest. Sign in with X to get on the leaderboard. Your balance and trades come with you." onSave={() => account.signIn?.()} />}
       {banner}
       {boardBody}
     </>
