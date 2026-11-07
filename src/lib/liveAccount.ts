@@ -1,7 +1,7 @@
 "use client";
 // Supabase-backed account: X sign-in, the shared pool, everyone's trades over Realtime, server-side buys/settlement.
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { RealtimePostgresChangesPayload } from "@supabase/supabase-js";
+import type { RealtimePostgresChangesPayload, SupabaseClient } from "@supabase/supabase-js";
 import { type AccountApi, type AssetStats, type LeaderRow, type Notify, type PoolState, type Prizes, type ServerVol, type TapeItem, type Trader } from "./account";
 import type { Asset } from "./feeds";
 import { supabaseBrowser } from "./supabase/client";
@@ -30,7 +30,21 @@ type Row = {
   close_proceeds: number | string | null;
   closed_at: string | null;
 };
-type Me = { id: string; x_handle: string | null; avatar_url: string | null; balance: number; points: number; last_top_up: string };
+type Me = { id: string; x_handle: string | null; avatar_url: string | null; balance: number; points: number; last_top_up: string; is_guest: boolean };
+
+// Crawlers and link previews don't get guest accounts.
+const BOT = /bot|crawl|spider|slurp|facebookexternalhit|embedly|preview|headless|lighthouse/i;
+// One guest per page load, even when React runs the effect twice in development.
+let guestStart: ReturnType<SupabaseClient["auth"]["signInAnonymously"]> | null = null;
+const callback = () => `${window.location.origin}/auth/callback`;
+const flag = (k: string, v?: string | null) => {
+  try {
+    if (v === undefined) return sessionStorage.getItem(k);
+    if (v === null) sessionStorage.removeItem(k);
+    else sessionStorage.setItem(k, v);
+  } catch {}
+  return null;
+};
 
 const COLS = "id,user_id,asset,side,strike,tenor,expiry,premium,units,max_payout,payout_cap,spot_at_buy,status,settle_price,payout,created_at,settled_at,close_price,close_proceeds,closed_at";
 const TAPE_LEN = 30;
@@ -83,14 +97,48 @@ export function useLiveAccount(notify: Notify): AccountApi {
   notifyRef.current = notify;
 
   // Session.
+  // Session. No session: start a guest account (anonymous sign-in), so visitors can trade right away.
   useEffect(() => {
-    sb.auth.getUser().then(({ data }) => setUserId(data.user?.id ?? null));
     const { data } = sb.auth.onAuthStateChange((_e, session) => setUserId(session?.user.id ?? null));
-    const err = new URLSearchParams(window.location.search).get("auth_error");
-    if (err) {
-      notifyRef.current(`Sign-in failed: ${err}`, "neg");
-      window.history.replaceState(null, "", window.location.pathname);
-    }
+    const params = new URLSearchParams(window.location.search + "&" + window.location.hash.slice(1));
+    const clean = () => window.history.replaceState(null, "", window.location.pathname);
+    (async () => {
+      const err = params.get("auth_error") ?? params.get("error_description");
+      const existing = params.has("link_existing") || params.get("error_code") === "identity_already_exists";
+      if (existing || err) clean();
+      if (existing) {
+        // "Save with X" found that X account already has an Expiry account: drop the guest and sign in there.
+        await fetch("/api/guest/discard", { method: "POST" }).catch(() => null);
+        await sb.auth.signOut({ scope: "local" });
+        flag("expiry_existing", "1");
+        flag("expiry_linking", null);
+        await sb.auth.signInWithOAuth({ provider: "x", options: { redirectTo: callback() } });
+        return;
+      }
+      if (err) {
+        flag("expiry_linking", null);
+        notifyRef.current(`Sign-in failed: ${err}`, "neg");
+      }
+      const { data: got, error } = await sb.auth.getUser();
+      let user = got.user;
+      if (!user) {
+        // A saved session whose guest was cleaned up: forget it and start fresh.
+        if (error && (error.status === 401 || error.status === 403 || error.code === "user_not_found")) await sb.auth.signOut({ scope: "local" });
+        if (!BOT.test(navigator.userAgent)) {
+          guestStart ??= sb.auth.signInAnonymously();
+          const r = await guestStart;
+          user = r.data.user;
+          if (r.error) guestStart = null;
+        }
+      }
+      setUserId(user?.id ?? null);
+      if (user && !user.is_anonymous) {
+        if (flag("expiry_existing")) notifyRef.current("Signed in to your existing account", "pos");
+        else if (flag("expiry_linking")) notifyRef.current("Saved with X. Your balance and history are yours, and you\u2019re on the leaderboard.", "pos");
+        flag("expiry_existing", null);
+        flag("expiry_linking", null);
+      }
+    })();
     return () => data.subscription.unsubscribe();
   }, [sb]);
   useEffect(() => {
@@ -269,6 +317,7 @@ export function useLiveAccount(notify: Notify): AccountApi {
     ready: userId !== undefined,
     signedIn,
     me: me ? { id: me.id, handle: me.x_handle, avatar: me.avatar_url } : null,
+    guest: !!me?.is_guest,
     balance: me?.balance ?? null,
     points: me?.points ?? null,
     canTopUp: !!me && me.balance < TOP_UP_BELOW && now - Date.parse(me.last_top_up) > WEEK_MS,
@@ -320,7 +369,18 @@ export function useLiveAccount(notify: Notify): AccountApi {
       await loadMe();
     },
     signIn() {
-      sb.auth.signInWithOAuth({ provider: "x", options: { redirectTo: `${window.location.origin}/auth/callback` } });
+      // A guest links X to the same account (same id, balance, trades); anyone else signs in with X.
+      if (me?.is_guest) {
+        flag("expiry_linking", "1");
+        sb.auth.linkIdentity({ provider: "x", options: { redirectTo: callback() } }).then(({ error }) => {
+          if (error) {
+            flag("expiry_linking", null);
+            notifyRef.current(`Couldn\u2019t start Save with X: ${error.message}`, "neg");
+          }
+        });
+        return;
+      }
+      sb.auth.signInWithOAuth({ provider: "x", options: { redirectTo: callback() } });
     },
     async signOut() {
       await sb.auth.signOut();

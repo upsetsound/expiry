@@ -408,4 +408,110 @@ describe.skipIf(!local)("database (staging or local Supabase)", () => {
       expect((await admin.rpc("topup", { p_user: users[9] })).data?.error).toBe("balance_too_high");
     });
   });
+
+  describe("guests", () => {
+    const guests: string[] = [];
+    const newGuest = async () => {
+      const c = createClient(local!.API_URL, local!.ANON_KEY, { auth: { persistSession: false } });
+      const { data, error } = await c.auth.signInAnonymously();
+      if (error) throw error;
+      guests.push(data.user!.id);
+      return { c, id: data.user!.id };
+    };
+    const settledTrade = (user: string) =>
+      q(
+        `insert into public.positions (user_id, asset, side, strike, tenor, expiry, window_ms, premium, units, max_payout, spot_at_buy, sigma, status, settle_price, payout, settled_at)
+         values ($1, 'BTC', 'call', 76000, '1m', now() - interval '2 minutes', 5000, 10, 0.5, 100, 76000, 0.4, 'settled', 76100, 50, now() - interval '1 minute')`,
+        [user],
+      );
+    afterAll(async () => {
+      if (guests.length) await q("delete from auth.users where id = any($1)", [guests]);
+    });
+
+    it("gives a guest the standard $10,000 account and logs guest_created", async () => {
+      const g = await newGuest();
+      const me = (await g.c.rpc("my_account").single()).data as { balance: number; is_guest: boolean; x_handle: string | null };
+      expect(me).toMatchObject({ balance: 10000, is_guest: true, x_handle: null });
+      expect(await q("select name from public.events where user_id = $1", [g.id])).toEqual([{ name: "guest_created" }]);
+    });
+
+    it("lets a guest trade through the same server function, and logs only the first trade", async () => {
+      const g = await newGuest();
+      expect((await buy(g.id)).data).toMatchObject({ ok: true });
+      await q("update public.profiles set last_buy_at = null where id = $1", [g.id]);
+      expect((await buy(g.id)).data).toMatchObject({ ok: true });
+      const ev = await q<{ name: string }>("select name from public.events where user_id = $1 order by id", [g.id]);
+      expect(ev.map((e) => e.name)).toEqual(["guest_created", "guest_first_trade"]);
+    });
+
+    it("hides guest trades from everyone but the guest", async () => {
+      const g = await newGuest();
+      await buy(g.id);
+      expect((await anon.from("positions").select("id").eq("user_id", g.id)).data).toEqual([]);
+      const other = await newGuest();
+      expect((await other.c.from("positions").select("id").eq("user_id", g.id)).data).toEqual([]);
+      expect((await g.c.from("positions").select("id").eq("user_id", g.id)).data).toHaveLength(1);
+      await buy(users[6]);
+      expect((await anon.from("positions").select("id").eq("user_id", users[6])).data).toHaveLength(1);
+    });
+
+    it("keeps guests off the leaderboard until they link X, then keeps their id, balance and history", async () => {
+      const g = await newGuest();
+      await settledTrade(g.id);
+      await q("update public.profiles set balance = 10040 where id = $1", [g.id]);
+      let board = (await anon.rpc("leaderboard")).data as { user_id: string; x_handle: string | null }[];
+      expect(board.some((r) => r.user_id === g.id)).toBe(false);
+
+      // What Supabase does on linkIdentity: add the X identity and clear is_anonymous on the same user.
+      await q(
+        `insert into auth.identities (provider_id, user_id, identity_data, provider, created_at, updated_at, last_sign_in_at)
+         values ($2, $1, $3, 'x', now(), now(), now())`,
+        [g.id, "x-" + g.id, JSON.stringify({ sub: "x-" + g.id, user_name: "linked_guest", avatar_url: "https://example.test/lg.png" })],
+      );
+      await q("update auth.users set is_anonymous = false where id = $1", [g.id]);
+
+      const [p] = await q("select x_handle, avatar_url, is_guest, balance from public.profiles where id = $1", [g.id]);
+      expect(p).toEqual({ x_handle: "linked_guest", avatar_url: "https://example.test/lg.png", is_guest: false, balance: "10040.00" });
+      expect((await anon.from("positions").select("id").eq("user_id", g.id)).data).toHaveLength(1);
+      board = (await anon.rpc("leaderboard")).data as { user_id: string; x_handle: string | null }[];
+      expect(board.find((r) => r.user_id === g.id)).toMatchObject({ x_handle: "linked_guest" });
+      const ev = await q<{ name: string }>("select name from public.events where user_id = $1 order by id", [g.id]);
+      expect(ev.map((e) => e.name)).toContain("guest_linked_x");
+    });
+
+    it("cleans up idle guests but never ones with open trades or real accounts", async () => {
+      const fresh = await newGuest();
+      const idleNoTrades = await newGuest();
+      const idleTrader = await newGuest();
+      const activeTrader = await newGuest();
+      const openTrade = await newGuest();
+      await q("update auth.users set created_at = now() - interval '2 days', last_sign_in_at = now() - interval '2 days' where id = any($1)", [
+        [idleNoTrades.id, activeTrader.id],
+      ]);
+      await q("update auth.users set created_at = now() - interval '40 days', last_sign_in_at = now() - interval '40 days' where id = any($1)", [
+        [idleTrader.id, openTrade.id],
+      ]);
+      await settledTrade(idleTrader.id);
+      await q("update public.positions set created_at = now() - interval '35 days' where user_id = $1", [idleTrader.id]);
+      await settledTrade(activeTrader.id);
+      await buy(openTrade.id);
+      await q("update public.positions set created_at = now() - interval '35 days' where user_id = $1", [openTrade.id]);
+      await q("update auth.users set created_at = now() - interval '40 days' where id = $1", [users[7]]);
+
+      const [{ n }] = await q<{ n: number }>("select public.cleanup_guests() as n");
+      expect(n).toBeGreaterThanOrEqual(2);
+      const left = (await q<{ id: string }>("select id from auth.users where id = any($1)", [
+        [fresh.id, idleNoTrades.id, idleTrader.id, activeTrader.id, openTrade.id, users[7]],
+      ])).map((r) => r.id);
+      expect(left.sort()).toEqual([fresh.id, activeTrader.id, openTrade.id, users[7]].sort());
+      expect(await q("select 1 from public.positions where user_id = $1", [idleTrader.id])).toEqual([]);
+      expect((await anon.rpc("cleanup_guests")).error).not.toBeNull();
+    });
+
+    it("keeps the event log server-only", async () => {
+      const g = await newGuest();
+      expect((await g.c.from("events").select("*")).error).not.toBeNull();
+      expect((await g.c.from("events").insert({ name: "guest_linked_x" })).error).not.toBeNull();
+    });
+  });
 });

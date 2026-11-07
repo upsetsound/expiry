@@ -45,6 +45,22 @@ export default async function Admin() {
     db.from("admin_daily").select("*").order("day", { ascending: true }),
     db.from("admin_retention").select("*").order("signup_day", { ascending: false }),
   ]);
+  // Guest funnel: counts per event, all time and last 7 days (events are written by database triggers).
+  const since = new Date(Date.now() - 7 * 86_400_000).toISOString();
+  const FUNNEL = [
+    ["guest_created", "Guests created"],
+    ["guest_first_trade", "Guests who traded"],
+    ["guest_linked_x", "Guests who saved with X"],
+  ] as const;
+  const funnel = await Promise.all(
+    FUNNEL.map(async ([name, label]) => {
+      const [all, week] = await Promise.all([
+        db.from("events").select("id", { count: "exact", head: true }).eq("name", name),
+        db.from("events").select("id", { count: "exact", head: true }).eq("name", name).gte("created_at", since),
+      ]);
+      return { label, all: all.count ?? 0, week: week.count ?? 0 };
+    }),
+  );
   if (t.error || d.error || r.error) throw new Error(t.error?.message ?? d.error?.message ?? r.error?.message);
   const totals = t.data!;
   const allDays = (d.data ?? []) as Day[];
@@ -78,6 +94,29 @@ export default async function Admin() {
         ))}
       </div>
       <p className="muted small">Active = placed a trade that UTC day. Day-N retention = signed up, then traded again exactly N days later (only cohorts old enough count).</p>
+
+      <h2>Guest funnel</h2>
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th>Step</th>
+            <th>Last 7 days</th>
+            <th>All time</th>
+            <th>Of guests created</th>
+          </tr>
+        </thead>
+        <tbody>
+          {funnel.map((s) => (
+            <tr key={s.label}>
+              <td>{s.label}</td>
+              <td>{num(s.week)}</td>
+              <td>{num(s.all)}</td>
+              <td>{pct(s.all, funnel[0].all)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="muted small">Signups and traders above include guests. Deleted guests stay counted here.</p>
 
       <h2>House pool over time</h2>
       <PoolChart days={chartDays} />

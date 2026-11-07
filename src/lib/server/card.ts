@@ -90,6 +90,9 @@ export async function tradeCard(id: string, tz: string, bg?: string | null): Pro
   if (!UUID.test(id)) return null;
   const { data: p } = await supabaseAdmin().from("positions").select("*").eq("id", id).maybeSingle<Row>();
   if (!p || (p.status !== "settled" && p.status !== "closed")) return null;
+  // Guests stay private until they save their account with X.
+  const { data: owner } = await supabaseAdmin().from("profiles").select("is_guest").eq("id", p.user_id).maybeSingle();
+  if (!owner || owner.is_guest) return null;
   const premium = Number(p.premium);
   const got = Number(p.payout ?? p.close_proceeds ?? 0);
   const at = Date.parse((p.status === "closed" ? p.closed_at : p.settled_at) ?? p.created_at);
@@ -116,7 +119,7 @@ export async function dayCard(handle: string, date: string, tz: string, bg?: str
   const range = dayRange(date, tz);
   if (!range) return null;
   const db = supabaseAdmin();
-  const { data: who } = await db.from("profiles").select("id,x_handle,avatar_url").ilike("x_handle", handle.replace(/[\\%_]/g, (c) => "\\" + c)).maybeSingle();
+  const { data: who } = await db.from("profiles").select("id,x_handle,avatar_url").eq("is_guest", false).ilike("x_handle", handle.replace(/[\\%_]/g, (c) => "\\" + c)).maybeSingle();
   if (!who) return null;
   const [from, to] = [new Date(range[0]).toISOString(), new Date(range[1]).toISOString()];
   const { data: rows } = await db

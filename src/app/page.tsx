@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Chart from "./Chart";
 import WinCard from "./WinCard";
 import ShareModal, { type ShareTarget } from "./ShareModal";
+import SavePrompt from "./SavePrompt";
 import { ASSETS, TICK, isDemo, useMarket, type Asset, type MarketState } from "@/lib/feeds";
 import { settledToast, useLocalAccount, type AccountApi, type Notify, type Position, type TapeItem, type Trader } from "@/lib/account";
 import { useRoundResults, type RoundResult } from "@/lib/useRoundResults";
@@ -385,6 +386,8 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   const [settled$, setSettled$] = useState<{ asset: Asset; tenor: Tenor; expiry: number; price: number; until: number } | null>(null);
   const [win, setWin] = useState<RoundResult | null>(null);
   const [shareTarget, setShareTarget] = useState<ShareTarget | null>(null);
+  const [savePrompt, setSavePrompt] = useState<string | null>(null);
+  const guest = live && !!account.guest;
   const shareDay = () => {
     if (!account.me?.handle) return;
     const d = new Date();
@@ -399,6 +402,15 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
     // Profitable rounds get the win card; losses keep the small red toast.
     if (r.pnl > 0) sounds.win();
     else sounds.loss();
+    // A guest's first settled trade: nudge them to save with X (once per browser).
+    if (guest) {
+      let seen = false;
+      try {
+        seen = localStorage.getItem("expiry_save_prompted") === "1";
+        localStorage.setItem("expiry_save_prompted", "1");
+      } catch {}
+      if (!seen) setSavePrompt("Nice. Save your P/L and get on the leaderboard");
+    }
     if (r.pnl > 0) setWin(r);
     else if (r.positions.length === 1) settledToast(r.positions[0], r.settle, r.payout, say);
     else say(`${r.asset} ${TENORS[r.tenor].label} round settled at ${num(r.settle, r.asset === "BTC" ? 0 : 2)} · ${signed(r.pnl, (x) => usd(x))}`, r.pnl >= 0 ? "pos" : "neg");
@@ -578,6 +590,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
   );
   const leaderboard = (
     <>
+      {guest && <SavePrompt inline text="You\u2019re playing as a guest. Sign in with X to get on the leaderboard. Your balance and trades come with you." onSave={() => account.signIn?.()} />}
       {banner}
       {boardBody}
     </>
@@ -636,7 +649,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
                 <button onClick={() => { setBottom("status"); setView("trade"); setMenu(null); }}>Pricing &amp; status</button>
                 <button onClick={() => { setView("house"); setMenu(null); }}>How the pool works</button>
                 {!live && <button onClick={resetAccount}>{resetArmed ? "Click again to reset" : "Reset paper account"}</button>}
-                {live && account.signedIn && <button onClick={() => { setMenu(null); account.signOut?.(); }}>Sign out</button>}
+                {live && account.signedIn && !guest && <button onClick={() => { setMenu(null); account.signOut?.(); }}>Sign out</button>}
               </div>
             )}
           </div>
@@ -666,7 +679,16 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
                   Top up
                 </button>
               )}
-              {live && account.me && <Who trader={account.me} size={22} />}
+              {guest ? (
+                <>
+                  <span className="guest-pill" title="Playing as a guest. Save with X to keep your account and join the leaderboard.">Guest</span>
+                  <button className="signin" onClick={() => account.signIn?.()}>
+                    Save with X
+                  </button>
+                </>
+              ) : (
+                live && account.me && <Who trader={account.me} size={22} />
+              )}
             </>
           )}
         </div>
@@ -742,7 +764,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
                 follow={follow}
                 onFollowChange={setFollow}
               />
-              {win && <WinCard result={win} me={account.me} onClose={() => setWin(null)} onShare={live ? setShareTarget : undefined} />}
+              {win && <WinCard result={win} me={account.me} onClose={() => setWin(null)} onShare={!live ? undefined : guest ? () => setSavePrompt("Save your account with X to share your P/L card") : setShareTarget} />}
             </div>
           </section>
 
@@ -964,6 +986,7 @@ function TradeApp({ market, account, toast, say }: { market: MarketState; accoun
             </div>
           </section>
           {shareTarget && <ShareModal target={shareTarget} onClose={() => setShareTarget(null)} />}
+          {guest && savePrompt && <SavePrompt text={savePrompt} onSave={() => account.signIn?.()} onClose={() => setSavePrompt(null)} />}
           {toast && (
             <div className={`toast ${toast.tone}`} role="status">
               {toast.text}

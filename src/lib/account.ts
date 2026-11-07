@@ -68,7 +68,8 @@ export type AccountApi = {
   topUp: () => Promise<void>;
   close: (p: Position, shownBid: number) => Promise<CloseResult>;
   reset?: () => void;
-  signIn?: () => void;
+  signIn?: () => void; // live: guests link X to the same account; otherwise sign in with X
+  guest?: boolean; // live: an anonymous guest account (not on the leaderboard, no share cards)
   signOut?: () => void;
 };
 
